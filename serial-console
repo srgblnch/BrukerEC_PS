@@ -1,0 +1,98 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+from __future__ import print_function
+import serial
+import sys
+import select
+import termios
+import tty
+import time
+import fcntl
+import optparse
+import os, os.path
+
+GUESS = object()
+EXIT_ERROR = 1
+EXIT_OKAY = 0
+# useful for interface with debugging port of Bruker PS.
+
+def main():
+    OP = optparse.OptionParser()
+    OP.usage = 'serial-console [DEVICE]'
+    OP.add_option('--log', '-l', dest='logfile', default=GUESS, help='where to store output of serial line')
+    OP.add_option('--escape', '--esc', '-e', metavar='ESC', dest='escape', default='\x02', help='escape character')
+    opt, arg = OP.parse_args(sys.argv)
+    if len(arg)<2:
+	device = '/dev/ttyS0'
+    else:
+	device = arg[1]
+    
+    if opt.logfile is GUESS:
+        opt.logfile = "log/%s-%s.log" % (device.split('/')[-1],time.time())
+    logdir = os.path.dirname(opt.logfile)
+    try:
+        os.makedirs(logdir)
+    except OSError, err:
+        if not err.args[0]==17: raise
+    fout = open(opt.logfile,'a')
+    BAUD = 115200
+    ESC = opt.escape
+    def w(arg):
+        fout.write(arg)
+        fout.flush()
+        sys.stdout.write(arg)
+        sys.stdout.flush()
+
+    ser = serial.Serial(device, BAUD)
+    if not ser.isOpen():
+        raise Exception('something went wrong opening serial line %s' % ser)
+    read_set = sinno, serno = sys.stdin.fileno(), ser.fileno()
+    ser.setTimeout(0.1)
+    old_tc = termios.tcgetattr(sinno)
+    try:
+        
+        w('time: %s\n' % time.strftime('%F %T'))
+        w('device: %s\n' % device)
+        w('lofile: %s\n' % opt.logfile)
+        w('baud: %s\n' % BAUD)
+        w('esc: %r\n' % ESC)
+        w('\n')
+        print(ser,'\nopen')
+        tty.setraw(sinno, termios.TCSANOW)
+
+        while ser.isOpen():
+                r,w,x = select.select( read_set, [], [] )
+
+                # reads data from serial line
+                if serno in r:
+                    ln = ser.read(ser.inWaiting())
+                    sys.stdout.write(ln)
+                    sys.stdout.flush()
+                    fout.write(ln)
+
+                # reads from standard input
+                if sinno in r:
+                    char = sys.stdin.read(1)
+                    if char==ESC:
+			next = sys.stdin.read(1)
+			if next==ESC:
+			    ser.close()
+		            break
+			elif next==' ':
+			    pass
+			else:
+			    char+=next
+			
+                    ser.write(char)
+
+                fout.flush()
+    finally:
+        fout.flush()                    
+        fout.close()
+        tty.setcbreak(sinno, termios.TCSANOW)
+        termios.tcsetattr(sinno, termios.TCSANOW, old_tc)
+        print()
+      
+if __name__=='__main__':
+  main()
