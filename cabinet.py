@@ -7,7 +7,6 @@ from threading import Thread, RLock, Event, Semaphore
 from time import time, sleep
 import logging
 from PyTango import Except, DevFailed, DevState
-DS = DevState
 
 from ps_util import txt, FriendlySocket, UniqList, bit_filter_msg, nop
 import ps_standard as PS
@@ -39,6 +38,8 @@ RELAY_PORT = 19
 
 _CAB = None
 
+CAB_READY = 'cabinet ready'
+
 def instance():
     global _CAB
     if not _CAB:
@@ -53,7 +54,7 @@ class UpdateThread(Thread):
         self.register = []
         self.busy = Event()
         self.running = True
-        self.throttle = 1
+        self.throttle = 0.5
         self.cycle = 0
         self.last_exc = None
         self.update_t = None
@@ -126,7 +127,6 @@ class CabinetControl(object):
     cab_port = None
     errors = None
     state_id = None
-    can_hanging = None
 
     def __init__(self):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -144,7 +144,10 @@ class CabinetControl(object):
 
         self.desc = 'generic'
         self.stat = None
+        self.init_counter = 0
 
+    def all_initialized(self):
+        return self.init_counter==len(self.updater.register)
 
     def start(self):
         self.updater.start()
@@ -167,11 +170,10 @@ class CabinetControl(object):
         self.log.info('connecting to '+host)
         self.comm.connect(host, DEFAULT_EC_PORT, connect=False)
         self.type_hint = type_hint
-        self.can_hanging = False
 
     def reconnect(self):
         '''Tries to etablish connection with 'host' (if configured).
-		   Returns True if the connection status went from down to up
+           Returns True if the connection status went from down to up
         '''
         if self.comm.is_connected: return False
         self.comm.reconnect()
@@ -185,6 +187,7 @@ class CabinetControl(object):
         else:
             pst = self.type_hint
 
+        self.init_counter += 1
         # decides type of cabinet based on first PS it control
         self.__class__, self.desc = CAB_CT[pst]
         return self.comm.is_connected
@@ -237,14 +240,12 @@ class CabinetControl(object):
             elif response[0]=='*':
                 tup =  (self.comm.host, self.active_port, cmd)
                 msg = "CAN bus %s, port %s timed out, command %s" % tup
-                self.can_hanging = True
                 raise CanBusTimeout(msg)
 
         except socket.error, exc:
                 msg = '%s: %s' % (self.host,exc)
                 raise PS.PS_Exception(msg)
 
-        self.can_hanging = False
         payload = response.strip()
         if payload.startswith("E"):
             if payload in ERROR_RESPONSE:
@@ -290,15 +291,10 @@ class CabinetControl(object):
 
     def update_state(self):
         STB = self.command(0, 'STB/')
-        try:
-            self.error_code = check(0, STB)
-        except CanBusTimeout:
-            self.can_hanging = True
-            raise
-        else:
-            rem = bool(int(self.command(0, 'REM/')))
-            self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
-            return self.error_code
+        self.error_code = check(0, STB)
+        rem = bool(int(self.command(0, 'REM/')))
+        self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
+        return self.error_code
 
 
 
@@ -334,6 +330,7 @@ class Big_Cabinet(Wave_Cabinet):
     POWER_ON_STATE = 0x06,
     POWER_OFF_STATE = 0x01,0x03
 
+    DS = DevState
     MACHINE_STAT = (
         (DS.OFF, 'CONFIG'),
         (DS.OFF, 'cabinet off'),
@@ -341,7 +338,7 @@ class Big_Cabinet(Wave_Cabinet):
         (DS.INIT, 'starting cabinet (inrush)'),
         (DS.STANDBY, 'dc on'),
         (DS.STANDBY, 'STANDBY'),
-        (DS.STANDBY, 'cabinet ready, power supply off'),
+        (DS.STANDBY, CAB_READY),
         (DS.MOVING, 'STOPPING'),
         (DS.ALARM, 'fault / interlock'),
         (DS.INIT, 'starting buck'),
@@ -391,23 +388,19 @@ class Big_Cabinet(Wave_Cabinet):
 
 
     def update_state(self):
-        try:
-            STB = self.command(RELAY_PORT, 'STB/')
-            self.error_code = check(RELAY_PORT, STB)
-            STC = self.command(RELAY_PORT, 'STC/')
-            self.state_id = check(RELAY_PORT, STC)
-            self.stat = self.get_stat()
-            rem = bool(int(self.command(RELAY_PORT, 'REM/')))
-            self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
-            return self.error_code
-        except CanBusTimeout:
-            self.can_hanging = True
-            raise
+        STB = self.command(RELAY_PORT, 'STB/')
+        self.error_code = check(RELAY_PORT, STB)
+        STC = self.command(RELAY_PORT, 'STC/')
+        self.state_id = check(RELAY_PORT, STC)
+        self.stat = self.get_stat()
+        rem = bool(int(self.command(RELAY_PORT, 'REM/')))
+        self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
+        return self.error_code
 
     def get_stat(self):
         if self.state_id is None: return None
         if self.state_id > len(self.MACHINE_STAT):
-            s = [ DS.STANDBY, 'standby ready' ]
+            s = [ DS.STANDBY, CAB_READY+' [%02d]' % self.state_id ]
         else:
             s = list(self.MACHINE_STAT[self.state_id])
             s[1] = s[1].lower()

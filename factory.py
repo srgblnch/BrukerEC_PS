@@ -78,7 +78,7 @@ def add_ec_cmd(cmdname,
     # define command only if not defined otherwise
     if hasattr(DEVICE, cmdname): return
 
-    @PS.ExceptionHandler
+    @PS.CommandExc
     def cfun(inst):
         return inst.cmd(cmdstr)
     setattr(DEVICE, cmdname, cfun)
@@ -142,15 +142,15 @@ def add_ec_attr(
 
 def create_ec_qfun( mnemonic, conv=lambda x:x):
     # attribute write function
-    def qfun(inst):
-        val_str = inst.cmd_seq(mnemonic+'/')[0]
+    def qfun(self):
+        val_str = self.cmd_seq(mnemonic+'/')[0]
         val = conv(val_str)
         return VDQ(val,q=PS.AQ_VALID)
     return qfun
 
 def create_ec_wfun(mnemonic, conv):
     # attribute write function
-    @PS.ExceptionHandler
+    @PS.AttrExc
     def wfun(inst, wattr):
         inst.write_ec_attribute(wattr, mnemonic, conv)
     return wfun
@@ -161,8 +161,11 @@ def name(f, n):
 
 def create_rfun(aname, query='auto'):
 
-    @PS.ExceptionHandler
+    @PS.AttrExc
     def rfun(inst, attr):
+        if not inst.cab.all_initialized():
+            attr.set_quality(PS.AQ_INVALID)
+            return
         aname = attr.get_name()
         vdq = inst.vdq(aname, query=query)
         vdq.set_attr(attr)

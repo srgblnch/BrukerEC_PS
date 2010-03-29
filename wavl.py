@@ -39,20 +39,17 @@ from collections import deque
 import logging
 from types import NoneType
 
-AQ = Tg.AttrQuality
 WAVE_PORT = 3702
 TERM = '\r\n'
 MAX_WAVE_LEN = 16384
 AVG_TIME_PER_SAMPLE = 0.0013*3
-TIME_BASE = 0.45
-SAFETY_MARGIN = TIME_BASE / 2
+# minimal time required for download plus safety margin
+TIME_BASE = 0.45+1.0
 # waveform points can have signed integer values from 0x80000 up to 0x7ffff
 # value corresponding to nominal setting
 PT_MAX = 0x7ffff
 PT_MIN = -PT_MAX
 PT_NOMINAL =  0x3ffff
-
-RETRY_CONNECT_AFTER = 3
 
 READY = 'ready'
 
@@ -156,7 +153,8 @@ class WaveformLoader(object):
         cmd_start_ul = 'u'+str(ch)+TERM
         wave = deque()
         start_t = time()
-        tmout = AVG_TIME_PER_SAMPLE*16364 + TIME_BASE + SAFETY_MARGIN
+        if maxlen is None: maxlen = MAX_WAVE_LEN
+        tmout = AVG_TIME_PER_SAMPLE*maxlen + TIME_BASE
         self.log.debug('starting upload %s, timeout %s', ch, tmout)
         self.sok.write(cmd_start_ul)
         self.sok.timeout = tmout
@@ -185,13 +183,13 @@ class WaveformLoader(object):
                     raise PS.PS_Exception('strange payload %r in upload, read %d points so far' % (payload, len(wave)))
 
         self._duration = time()-start_t
-        wave = list(wave)
+        wave = tuple(wave)
         if maxlen and maxlen<len(wave):
             msg = 'upload yielded %d points, expected maximal %d' % (len(wave), maxlen)
             raise PS.PS_Exception(msg)
 
         self.log.debug('upload time %s s for %s pt', self._duration, len(wave))
-        return tuple(wave)
+        return wave
 
 
     def check_waveform(self, dat):
@@ -213,8 +211,9 @@ class WaveformLoader(object):
     def download(self, ch, wave, verify=1):
         '''Transmits waveform to control unit.
         '''
+        wave = tuple(wave)
         # records wave for reference if download fails
-        tmout = AVG_TIME_PER_SAMPLE * len(wave) + TIME_BASE + SAFETY_MARGIN
+        tmout = AVG_TIME_PER_SAMPLE * len(wave) + TIME_BASE
         self.log.debug('starting download %s, timeout %s s',ch, tmout)
         self.sok.timeout = tmout
         buf = 'd%d' % ch+TERM + \
