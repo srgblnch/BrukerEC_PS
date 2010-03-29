@@ -1301,7 +1301,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         cmd_prt = 'PRT=%d' % port #< command for going back to current port
         cl = command_list[:]
         cl.append(cmd_prt)
-            rls = self.cab.command_seq(port, *cl)[:-1]
+        rls = self.cab.command_seq(port, *cl)[:-1]
         # executes a PRT that
         self.cab.command(port)
             return rls
@@ -1374,8 +1374,8 @@ class BrukerEC_Cabinet_Class(PS.PowerSupply_Class):
         { 'display level' : Tg.DispLevel.EXPERT },
     ]
     attr_list = PS.gen_attr_list(max_err=64)
-    attr_list['ErrorCode'] = [ [ Tg.DevULong, Tg.SCALAR, Tg.READ ] ]
-    attr_list['MachineState'] = [ [ Tg.DevULong, Tg.SCALAR, Tg.READ ] ]
+    attr_list['ErrorCode'] = [ [ Tg.DevULong, Tg.SCALAR, Tg.READ ], { 'display level' : Tg.DispLevel.EXPERT } ]
+    attr_list['MachineState'] = [ [ Tg.DevULong, Tg.SCALAR, Tg.READ ], { 'display level' : Tg.DispLevel.EXPERT }  ]
 
 if __name__ == '__main__':
     classes = (BrukerEC_PS, BrukerEC_Cabinet)
