@@ -153,6 +153,7 @@ class WaveformLoader(object):
         cmd_start_ul = 'u'+str(ch)+TERM
         wave = deque()
         start_t = time()
+        if maxlen is None: maxlen = MAX_WAVE_LEN
         tmout = AVG_TIME_PER_SAMPLE*maxlen + TIME_BASE
         self.log.debug('starting upload %s, timeout %s', ch, tmout)
         self.sok.write(cmd_start_ul)

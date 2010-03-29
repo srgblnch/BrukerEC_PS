@@ -180,7 +180,6 @@ class BrukerEC_PS(PS.PowerSupply):
         PS.PowerSupply.__init__(self, cl, name)
         self.init_device(cl, name)
 
-    @PS.ExceptionHandler
     def init_device(self, cl=None, name=None):
         PS.PowerSupply.init_device(self, cl, name)
 
@@ -365,7 +364,7 @@ class BrukerEC_PS(PS.PowerSupply):
 
             # after this line the pstype is considered fully detected
             self._pstype = pst
-	    self.cab.init_counter += 1
+            self.cab.init_counter += 1
 
             try:
                 # sets sane write value for WaveOffset
@@ -586,7 +585,8 @@ class BrukerEC_PS(PS.PowerSupply):
         self.log.debug('UploadWaveform!')
         if 'Waveform' in self.cache:
             del self.cache['Waveform']
-        ul = self.wave_load = wavl.Upload(self.Port)
+        n = self.update_attr('WaveLength')
+        ul = self.wave_load = wavl.Upload(self.Port, n)
         self.push_changing('WaveLength')
         self.push_changing('WaveDuration')
         self.push_vdq('WaveStatus', ul.BASE_MSG+' pending', q=AQ_CHANGING)
@@ -680,8 +680,7 @@ class BrukerEC_PS(PS.PowerSupply):
 
         # if not an upload is initiated
         elif self.wave_load is None:
-            n = self.update_attr('WaveLength')
-            self.UploadWaveform(maxlen=n)
+            self.UploadWaveform()
             vdq = self.cache['Waveform'] = VDQ([], q=AQ_INVALID)
             return vdq
 
@@ -846,7 +845,6 @@ class BrukerEC_PS(PS.PowerSupply):
     def read_Errors(self, attr):
         attr.set_value(self.__errors)
 
-    @PS.AttrExc
     def query_Errors(self):
         return VDQ(self.__errors, q=AQ_VALID)
 
@@ -1134,9 +1132,6 @@ factory.add_ec_attr('WaveInterpolation', 'WST', rw=READ_WRITE, tp=DevShort,
         },
 )
 factory.add_attribute('WaveStatus', tp=DevString)
-factory.add_attribute('RegulationTuneable', tp=DevBoolean, rw=READ_WRITE,
-    extra = { 'description': 'whether modifying parameters related to regulation loop should be allowed or not. only set this to true when you really, really know what you are doing AND have a backup.' , 'display level' : Tg.DispLevel.EXPERT
-})
 
 factory.add_cmd('ObjInt',
     [DevShort,'cobj id to read'],
@@ -1194,7 +1189,6 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         PS.PowerSupply.__init__(self, cl, name)
         self.init_device(cl, name)
 
-    @PS.ExceptionHandler
     def init_device(self, cl=None, name=None):
         PS.PowerSupply.init_device(self, cl, name)
 
@@ -1302,9 +1296,9 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         cl = command_list[:]
         cl.append(cmd_prt)
         rls = self.cab.command_seq(port, *cl)[:-1]
-        # executes a PRT that
+        # executes a PRT that resets the port to the original one
         self.cab.command(port)
-            return rls
+        return rls
 
     cmd_seq = BrukerEC_PS.__dict__['cmd_seq']
 
@@ -1356,7 +1350,9 @@ class BrukerEC_Cabinet(PS.PowerSupply):
 
 class BrukerEC_Cabinet_Class(PS.PowerSupply_Class):
 
-    device_property_list = PS.gen_property_list( ('IpAddress',))
+    class_property_list = {}
+
+    device_property_list = PS.gen_property_list( ('IpAddress',),cpl=class_property_list)
     device_property_list.update({
         'Port' : [ DevString,
             'port used for cabinet controller, or empty to indicate that STB/ on port 0 should be used',
@@ -1376,6 +1372,7 @@ class BrukerEC_Cabinet_Class(PS.PowerSupply_Class):
     attr_list = PS.gen_attr_list(max_err=64)
     attr_list['ErrorCode'] = [ [ Tg.DevULong, Tg.SCALAR, Tg.READ ], { 'display level' : Tg.DispLevel.EXPERT } ]
     attr_list['MachineState'] = [ [ Tg.DevULong, Tg.SCALAR, Tg.READ ], { 'display level' : Tg.DispLevel.EXPERT }  ]
+
 
 if __name__ == '__main__':
     classes = (BrukerEC_PS, BrukerEC_Cabinet)

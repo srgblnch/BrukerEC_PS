@@ -34,6 +34,7 @@ class Tuner(object):
             r_meth=read_RegulationTuneable,
             w_meth=write_RegulationTuneable)
         aprop = Tg.UserDefaultAttrProp()
+        aprop.set_description('whether modifying parameters related to regulation loop should be allowed or not. only set this to true when you really, really know what you are doing AND have a backup.')
         attr.set_default_properties(aprop)
 
     def __init__(self, impl, pstype):

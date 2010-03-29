@@ -144,7 +144,10 @@ class CabinetControl(object):
 
         self.desc = 'generic'
         self.stat = None
+        self.init_counter = 0
 
+    def all_initialized(self):
+        return self.init_counter==len(self.updater.register)
 
     def start(self):
         self.updater.start()
@@ -170,7 +173,7 @@ class CabinetControl(object):
 
     def reconnect(self):
         '''Tries to etablish connection with 'host' (if configured).
-		   Returns True if the connection status went from down to up
+           Returns True if the connection status went from down to up
         '''
         if self.comm.is_connected: return False
         self.comm.reconnect()
@@ -184,6 +187,7 @@ class CabinetControl(object):
         else:
             pst = self.type_hint
 
+        self.init_counter += 1
         # decides type of cabinet based on first PS it control
         self.__class__, self.desc = CAB_CT[pst]
         return self.comm.is_connected
