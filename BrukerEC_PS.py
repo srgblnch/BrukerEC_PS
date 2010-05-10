@@ -39,6 +39,7 @@ from pprint import pformat,pprint
 from copy import deepcopy
 from time import time, sleep
 import logging
+from zlib import crc32
 
 from PyTango import DevVoid, DevVarStringArray, DevString, DevDouble, \
   DevBoolean, DevShort, DevLong, DevUShort, DevULong, DevState, \
@@ -211,6 +212,8 @@ class BrukerEC_PS(PS.PowerSupply):
         self.cache['WaveLength'] = VDQ(0)
         self.cache['WaveDuration'] = VDQ(0.0)
         self.cache['WaveStatus'] = VDQ(wavl.READY, q=AQ_VALID)
+        self.cache['WaveId'] = VDQ(0, q=AQ_INVALID)
+        self.cache['WaveName'] = VDQ('', q=AQ_INVALID)
 
         self.update_cycle = 0
         self.cab.updater.add(self.UpdateState)
@@ -302,6 +305,15 @@ class BrukerEC_PS(PS.PowerSupply):
     def query_RemoteMode(self):
         return self.cab.rem_vdq
 
+    @PS.AttrExc
+    def read_Current(self, attr):
+        self.vdq('Current').set_attr(attr)
+
+    @PS.AttrExc
+    def read_CurrentSetpoint(self, attr):
+        self.vdq_set(attr)
+        attr.set_write_value(self.value('CurrentSetpoint'))
+
     def query_CurrentDelta(self):
         I = self.vdq('Current')
         Iset = self.vdq('CurrentSetpoint')
@@ -359,7 +371,7 @@ class BrukerEC_PS(PS.PowerSupply):
             # cabinet type is detected when that cabinet device connects
             # the socket and the Version query above ensure that this has
             # happened
-            if self.EnableRegulationTuning=='Yes, I know what I am doing.' and self.use_waveforms:
+            if self.use_waveforms:
                 self.tuner = tuning.Tuner(self, pst)
 
             # after this line the pstype is considered fully detected
@@ -424,7 +436,7 @@ class BrukerEC_PS(PS.PowerSupply):
         try:
             # invalidates previous Waveform read value
             self.push_changing('Waveform' , [])
-            self.push_vdq('WaveStatus', load.ACTIVE_MSG, q=AQ_CHANGING)
+            self.push_vdq('WaveStatus', load.BASE_MSG+'ing...', q=AQ_CHANGING)
             start_t = time()
             load.run(self, self.wavl)
             diff_t = time()-start_t
@@ -770,6 +782,8 @@ class BrukerEC_PS(PS.PowerSupply):
         self.cache['Waveform'] = VDQ(iy, t0, AQ_VALID)
         self.update_attr('WaveLength')
         self.update_attr('WaveDuration')
+        wavehash = wavl.calc_hash(ymax, iy)
+        self.push_vdq('WaveId', wavehash, d=t0, q=AQ_VALID)
         return
 
         # interpolation features are simply ignored
@@ -782,6 +796,9 @@ class BrukerEC_PS(PS.PowerSupply):
         self.cache['Waveform'] = VDQ(waveform, time(), AQ_VALID)
         self.update_attr('WaveLength')
         self.update_attr('WaveDuration')
+        Inominal = self.get_nominal_y()[1]
+        wavehash = wavl.calc_hash(Inominal, waveform)
+        self.push_vdq('WaveId', wavehash, d=t0, q=AQ_VALID)
 
     def get_regulation_x(self, n=None, t=None):
         '''Returns an array of points in time corresponding to the actual regulation
@@ -858,9 +875,8 @@ class BrukerEC_PS(PS.PowerSupply):
         try:
             waveform = wattr.get_write_value()
             self.check_waveform_input(waveform)
-            PT = wavl.PT_NOMINAL
             YBOTTOM, I_nominal = self.get_nominal_y()
-            raw_data = tuple( int( (y*PT)/I_nominal ) for y in waveform )
+            raw_data = wavl.to_raw(I_nominal, waveform)
             dl = self.wave_load = wavl.Download(self.Port, waveform, raw_data)
             ix = self.get_regulation_x(n=len(waveform))
 
@@ -869,6 +885,8 @@ class BrukerEC_PS(PS.PowerSupply):
             self.push_changing('WaveLength')
             self.push_changing('WaveDuration')
             self.push_changing('WaveStatus', dl.BASE_MSG+' pending')
+            self.push_changing('WaveId')
+            self.push_vdq('WaveName', self.value('WaveName'), q=AQ_ALARM)
 
             # finally record for later use
             # self.store_wave()
@@ -887,13 +905,13 @@ class BrukerEC_PS(PS.PowerSupply):
     def query_ErrorCode(self):
         def conv(x):
             return cabinet.check(self.Port, x)
-        vdq = self.query_ec('STA/', conv)
+        vdq = self.query_ec('STA', conv)
         return vdq
 
     def query_MachineState(self):
         def conv(x):
             return cabinet.check(self.Port, x)
-        return self.query_ec('STC/', conv)
+        return self.query_ec('STC', conv)
 
     def query_ec(self, mnemonic, conv_fun):
         '''Executes EC query 'mnemonic' in order to obtain the value of an
@@ -917,7 +935,7 @@ class BrukerEC_PS(PS.PowerSupply):
         return value
 
     @PS.AttrExc
-    def write_CurrentSetpoint(self, attr):
+    def write_Current(self, attr):
         # gets write value
         Iset = attr.get_write_value()
         slope = self.value('CurrentRamp')
@@ -956,7 +974,7 @@ class BrukerEC_PS(PS.PowerSupply):
 
     def query_WaveGeneration(self):
         if self.use_waveforms:
-            return self.query_ec('WMO/', lambda x: bool(int(x)))
+            return self.query_ec('WMO', lambda x: bool(int(x)))
         else:
             return VDQ(False, q=AQ_VALID)
 
@@ -1001,6 +1019,11 @@ class BrukerEC_PS(PS.PowerSupply):
         self.vdq_set(attr)
 
     @PS.AttrExc
+    def read_WaveId(self, attr):
+        self._check_use_waveforms('attribute '+attr.get_name())
+        self.vdq_set(attr)
+
+    @PS.AttrExc
     def write_TriggerMask(self, attr):
         self._check_use_waveforms('attribute '+attr.get_name())
         value = attr.get_write_value()
@@ -1013,6 +1036,13 @@ class BrukerEC_PS(PS.PowerSupply):
         else:
             return VDQ(-1)
 
+    @PS.AttrExc
+    def read_WaveName(self, attr):
+        self.vdq_set(attr)
+
+    @PS.AttrExc
+    def write_WaveName(self, attr):
+        self.cache['WaveName'] = VDQ(attr.get_write_value(), q=AQ_VALID)
 
 class BrukerEC_PS_Class(PS.PowerSupply_Class):
 
@@ -1055,6 +1085,9 @@ class BrukerEC_PS_Class(PS.PowerSupply_Class):
 
 
     attr_list = PS.gen_attr_list(max_err=100, opt=('Resistance',))
+    attr_list['WaveX'] = [[DevDouble, SPECTRUM, READ_WRITE, wavl.MAX_WAVE_LEN] ,{
+        'description' : 'abscissa of wave as written by the user'
+    }]
     # disabled
     if 0:
       attr_list['Iwave'] = [[DevDouble, SPECTRUM, READ_WRITE, wavl.MAX_WAVE_LEN] ,{
@@ -1062,9 +1095,6 @@ class BrukerEC_PS_Class(PS.PowerSupply_Class):
   Read and writing this attribute can take longer than the usual 3 seconds timeout.
 	  '''
       }]
-#    attr_list['WaveX'] = [[DevDouble, SPECTRUM, READ_WRITE, wavl.MAX_WAVE_LEN] ,{
-#        'description' : 'abscissa of wave as written by the user'
-#    }]
 #    attr_list['WaveY'] = [[DevDouble, SPECTRUM, READ_WRITE, wavl.MAX_WAVE_LEN] ,{
 #        'description' : 'y-data '
 #        }]
@@ -1090,7 +1120,7 @@ factory.add_ec_attr('CurrentSetpoint', 'CUR', rw=READ_WRITE,
     extra={'format' : FMT},
 )
 
-factory.add_ec_attr('Current', 'ADC',
+factory.add_ec_attr('Current', 'ADC', rw=READ_WRITE,
     extra={'format' : FMT}
 )
 factory.add_ec_attr('CurrentRamp', 'RTC', rw=READ_WRITE,
@@ -1132,6 +1162,7 @@ factory.add_ec_attr('WaveInterpolation', 'WST', rw=READ_WRITE, tp=DevShort,
         },
 )
 factory.add_attribute('WaveStatus', tp=DevString)
+factory.add_attribute('WaveName', tp=DevString, extra=dict(Memorized=True))
 
 factory.add_cmd('ObjInt',
     [DevShort,'cobj id to read'],
@@ -1151,6 +1182,10 @@ factory.add_attribute('RegulationFrequency', tp=DevDouble,extra={
 factory.add_attribute('WaveDuration', tp=DevDouble, extra={
     'unit' : 'ms',
     'description' : 'how much time it takes to pass the wave form'
+})
+
+factory.add_attribute('WaveId', tp=DevLong, extra={
+    'description' : 'crc32 finger print of wave form'
 })
 
 # retrieved directly from cache
@@ -1174,6 +1209,8 @@ factory.add_attribute('CurrentNominal', tp=DevDouble, extra={
     'description' : 'nominal current'
     # , 'max_alarm' : 0.1
 })
+
+
 
 class BrukerEC_Cabinet(PS.PowerSupply):
     '''Tango interface to CabinetControl object.
@@ -1210,7 +1247,6 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         self._RemoteMode = VDQ(False, time(), AQ_INVALID)
 
         self.cab.updater.add(self.UpdateState)
-        self.UpdateState()
         self.cab.start()
 
     @PS.ExceptionHandler

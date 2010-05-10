@@ -55,6 +55,17 @@ READY = 'ready'
 
 _WAVL = None #< recent most created wave form loader
 
+def to_raw(I_nominal, waveform):
+    return tuple( int( (y*PT_NOMINAL)/I_nominal ) for y in waveform )
+
+def calc_hash(I, wav):
+    '''Calculates hash value for the specified waveform.
+        @param I nominal current of the power supply
+    '''
+    dat = (int(I),) + to_raw(I, wav)
+    ar = np.array(dat, np.int32)
+    return crc32(ar.data)
+
 def instance():
     global _WAVL
     if not _WAVL:
@@ -74,7 +85,6 @@ class Load(object):
 
 class Download(Load):
 
-    ACTIVE_MSG = 'downloading...'
     BASE_MSG = 'download'
 
     def __init__(self, port, wave, data, verify=True):
@@ -93,7 +103,6 @@ class Download(Load):
 
 class Upload(Load):
 
-    ACTIVE_MSG = 'uploading...'
     BASE_MSG = 'upload'
 
     def __init__(self, port, maxlen=None):

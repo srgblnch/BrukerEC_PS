@@ -60,6 +60,41 @@ STANDBY = Tg.DevState.STANDBY
 ALARM = Tg.DevState.ALARM
 MOVING = Tg.DevState.MOVING
 
+BEND_FAULT_STATE = frozenset( (0x0c, 0x0d) )
+BEND_ON_STATE = 0x0a
+BEND_OFF_STATE = 0x03
+
+BEND_ON_T = {
+    0x03 : 5*60,
+    0x0A : 0.0
+}
+
+BEND_OFF_T = {
+    0x0A : 5*60.0,
+    0x0B : 5*60.0,
+    0x0E : 5*60.0,
+    0x0F : 5*60.0
+}
+
+CAB_ON_STATE = 0x06
+CAB_OFF_STATE = 0x01
+CAB_FAULT_STATE = frozenset( (0x08,) )
+
+CAB_ON_T = {
+    0x06 : 0.0,
+    0x01 : 5 * 60.0
+}
+
+CAB_OFF_T = {
+    0x01 : 0.0, # IDLE (DC off)
+    0x0B : 5*60.0,
+    0x0E : 5*60.0,
+    0x0F : 5*60.0
+}
+
+
+
+
 #==================================================================
 #   BrukerBend_PS Class Description:
 #
@@ -111,7 +146,8 @@ class BrukerBend_PS(PS.PowerSupply):
             ls = DB.get_device_class_list(serv_name)
             dictum = dict(zip(ls[1::2],ls[::2]))
             return dictum['BrukerEC_Cabinet']
-            ## find name of BrukerEC_Cabinet corresponding to
+
+            ## finds name of BrukerEC_Cabinet corresponding to
             ## the device name specified
         self.bend1.cab = Tg.DeviceProxy(find_cab(self.bend1))
         self.bend2.cab = Tg.DeviceProxy(find_cab(self.bend2))
@@ -195,15 +231,11 @@ class BrukerBend_PS(PS.PowerSupply):
             setattr(self, '_a'+aname, None)
             attr.set_quality(AQ_INVALID)
 
-
-
-    def distill_Iread_quality(self, quality, aval1, aval2):
-        if self._aWaveGeneration: return AQ_CHANGING
-        return self.distill_I_quality(quality, aval1, aval2)
-
     def distill_I_quality(self, quality, aval1, aval2):
         diff = abs(aval1.value - aval2.value) / self.Inominal
-        if quality == AQ_VALID:
+        if self._aWaveGeneration:
+            quality =  AQ_CHANGING
+        elif quality == AQ_VALID:
             if diff > self.RegulationPrecision:
                 quality = AQ_WARNING
             if diff > 2*self.RegulationPrecision:
@@ -216,7 +248,7 @@ class BrukerBend_PS(PS.PowerSupply):
 
     @PS.ExceptionHandler
     def read_Current(self, attr):
-        self.read_attribute(attr, self.distill_Iread_quality)
+        self.read_attribute(attr, self.distill_I_quality)
 
     @PS.ExceptionHandler
     def read_Current1(self, attr):
@@ -253,37 +285,34 @@ class BrukerBend_PS(PS.PowerSupply):
         self.upswitch_off(self.bend1)
         self.upswitch_off(self.bend2)
 
-    def est1_on_t(self, bend):
-        b,c = self.mac_state(bend)
-        if c==CAB_OFF:
-            return 5*60.0
-        elif c==CAB_ON:
-            if b==BEND_ON:
-                return 0*60.0
+    def est1_on_t(self, b, c):
+        if c in CAB_ON_T:
+            t = CAB_ON_T[c]
+            if b in BEND_ON_T:
+                return t+BEND_ON_T[b]
             else:
-                return 2*60.0
+                msg = 'cabinet ready, but can not switch on PC %x' % b
+                raise PS.PS_Exception(msg)
         else:
-            return 0
+            msg = 'currently impossible to switch on bending cabinet %x' % c
+            raise PS.PS_Exception(msg)
 
-    def est1_off_t(self, bend):
-        b,c = self.mac_state(bend)
-        CAB_T = 3
-        BEND_T = 2
-        if b==BEND_ON:
-            return (CAB_T+BEND_T)*60.0
-        elif c==CAB_ON and b:
-            return 5*60.0
-        elif c==CAB_ON and b==BEND_ON:
-            return
-        elif c==CAB_ON and b==BEND_OFF:
-                return 2*60.0
-        else:
-            return 0
+    def est1_off_t(self, b, c):
+        return CAB_OFF_T.get(c,0.0)+BEND_OFF_T.get(b,0.0)
 
-    def estimate_switch_on_time(self):
-        mc1 = self.mac_state(self.bend1)
-        mc2 = self.mac_state(self.bend2)
+    def estimate_switch_on_time(self, mc1=None, mc2=None):
+        if mc1 is None: mc1 = self.mac_state(self.bend1)
+        if mc2 is None: mc2 = self.mac_state(self.bend2)
+        on1_t = self.est1_on_t(*mc1)
+        on2_t = self.est1_on_t(*mc2)
+        return max(on1_t, on2_t)
 
+    def estimate_switch_off_time(self, mc1=None, mc2=None):
+        if mc1 is None: mc1 = self.mac_state(self.bend1)
+        if mc2 is None: mc2 = self.mac_state(self.bend2)
+        off1_t = self.est1_off_t(*mc1)
+        off2_t = self.est1_off_t(*mc2)
+        return max(off1_t, off2_t)
 
     @PS.ExceptionHandler
     def UpdateState(self):
@@ -362,34 +391,33 @@ class BrukerBend_PS(PS.PowerSupply):
         '''
         c,b = self.mac_state(bend)
 
-
-        if c == CAB_OFF:
+        if c == CAB_OFF_STATE:
             c.On()
 
-        elif c == CAB_ON:
+        elif c == CAB_ON_STATE:
             b.On()
 
-        elif c == CAB_ON and b == BEND_ON:
+        elif c == CAB_ON_STATE and b == BEND_ON_STATE:
             return True
 
-        elif c in CAB_FAULT_STATE:
+        elif c in CAB_FAULT_STATE or b in BEND_FAULT_STATE:
             self.switching = SWITCH_NEUTRAL
             return True
 
-    def upswitch_off(self, bend, cab):
+    def upswitch_off(self, bend):
         '''Switches one bending power supply off.
            Returns True once PS are on otherwise None or False.
 
         '''
         c,b = self.mac_state(bend)
 
-        if b == BEND_OFF:
+        if b == BEND_OFF_STATE:
             return True
 
-        elif b == BEND_ON:
+        elif b == BEND_ON_STATE:
             b.Off()
 
-        elif c in CAB_FAULT_STATE:
+        elif c in CAB_FAULT_STATE or b in BEND_FAULT_STATE:
             self.switching = SWITCH_NEUTRAL
             return True
 
@@ -398,6 +426,7 @@ class BrukerBend_PS(PS.PowerSupply):
         baval = bend.read_attribute('MachineState')
         cabaval = bend.cab.read_attribute('MachineState')
         assert baval.quality == AQ_VALID
+# TODO: possibly the value could be non if qualiy INVALID
 #        assert cabaval.quality == AQ_VALID
         c,b = cabaval, baval.value
         return c,b
@@ -433,20 +462,15 @@ class BrukerBend_PS(PS.PowerSupply):
             return True
 
     @PS.AttrExc
-    def read_CurrentSetpoint(self, attr):
-        self.read_attribute(attr, self.distill_I_quality)
-
-    @PS.AttrExc
     def read_Voltage(self, attr):
         self.read_attribute(attr)
 
     @PS.AttrExc
-    def write_CurrentSetpoint(self, attr):
+    def write_Current(self, attr):
             # updates Current setpoint
             Iset = attr.get_write_value()
-            self.bend1.write_attribute('CurrentSetpoint', Iset)
-            self.bend2.write_attribute('CurrentSetpoint', Iset)
-
+            self.bend1.write_attribute('Current', Iset)
+            self.bend2.write_attribute('Current', Iset)
 
     def write_scalar(self, attr):
         aname = attr.get_name()
@@ -463,7 +487,7 @@ class BrukerBend_PS(PS.PowerSupply):
         self.bend2.write_attribute(aname, data)
 
     @PS.AttrExc
-    def write_CurrentSetpoint(self, attr):
+    def write_Current(self, attr):
         self.write_scalar(attr)
 
     @PS.CommandExc
@@ -572,6 +596,13 @@ class BrukerBend_PS(PS.PowerSupply):
     def read_WaveOffset(self, attr):
         self.read_attribute(attr)
 
+    @PS.AttrExc
+    def read_WaveName(self, attr):
+        self.read_attribute(attr)
+
+    @PS.AttrExc
+    def read_WaveId(self, attr):
+        self.read_attribute(attr)
 
 class BrukerBend_PS_Class(Tg.DeviceClass):
 
@@ -588,20 +619,20 @@ class BrukerBend_PS_Class(Tg.DeviceClass):
         device_property_list.update({
             'Trigger' :
                 [ Tg.DevString,
-                    "Event receiver sending trigger for bending and quadrupoles", 'none'],
+                    "Event receiver sending trigger for bending and quadrupoles", 'bo04/ti/evr-cpc1502-a'],
 
             'Bend1':
                 [Tg.DevString,
                 "Name of device controlling bending 1.",
-            [] ],
+            'bo/pc/bend-1' ],
             'Bend2':
                 [Tg.DevString,
                 "Name of device controlling bending 2.",
-                [] ],
+                'bo/pc/bend-2' ],
                 'QuadCabinet':
             [Tg.DevString,
             "Name of the quadrupole cabinet, used for Sync command.",
-            [] ],
+            'bo/ct/pc-q' ],
                 })
 
 
@@ -628,6 +659,8 @@ class BrukerBend_PS_Class(Tg.DeviceClass):
                 'Waveform' : [[ Tg.DevDouble, Tg.SPECTRUM, Tg.READ_WRITE, 2**14] , {} ],
                 'WaveLength' : [[ Tg.DevShort, Tg.SCALAR, Tg.READ], {'unit' : 'points'} ],
                 'WaveStatus' : [[ Tg.DevString, Tg.SCALAR, Tg.READ ]],
+                'WaveName' : [[ Tg.DevString, Tg.SCALAR, Tg.READ ]],
+                'WaveId' : [[ Tg.DevLong, Tg.SCALAR, Tg.READ ]],
                 'WaveDuration' : [[ Tg.DevDouble, Tg.SCALAR, Tg.READ ], {'unit': 'ms'} ],
                 'WaveOffset' : [[ Tg.DevDouble, Tg.SCALAR, Tg.READ_WRITE ], {'unit': 'A'} ],
                 'WaveInterpolation' : [[ Tg.DevShort, Tg.SCALAR, Tg.READ_WRITE ], { 'unit': 'log2(periods/point)' } ],
@@ -641,8 +674,6 @@ class BrukerBend_PS_Class(Tg.DeviceClass):
         attr_list['CurrentSetpoint'][1]['format'] = FMT
         attr_list['Voltage'][1]['format'] = FMT
         attr_list['Current'][1]['format'] = FMT
-
-
 
         #  BrukerBend_PSClass Constructor
         def __init__(self, name):
