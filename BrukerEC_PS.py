@@ -454,8 +454,7 @@ class BrukerEC_PS(PS.PowerSupply):
         if not self.cab.all_initialized():
             return
 
-        self.log.debug('Update State %s', self.get_name())
-
+        self.log.debug('Update State')
         self._up_start_t = time()
 
         # resets alarms
@@ -1007,6 +1006,26 @@ class BrukerEC_PS(PS.PowerSupply):
         self.write_ec_attribute(attr, 'WTR', str)
         self.cache['TriggerMask'] = VDQ(value, q=AQ_VALID)
 
+    @PS.AttrExc
+    def read_CurrentSetpoint(self, attr):
+        Iset = self.value('CurrentSetpoint')
+        attr.set_value(Iset)
+        attr.set_write_value(Iset)
+
+    @PS.AttrExc
+    def read_Current(self, attr):
+        I = self.value('Current')
+        Iset = self.value('CurrentSetpoint')
+        attr.set_value(I)
+        attr.set_write_value(Iset)
+
+    @PS.AttrExc
+    def write_Current(self, wattr):
+        Iset = wattr.get_write_value()
+        self.write_ec_attribute(wattr, 'CUR', repr)
+        self.cache['CurrentSetpoint'] = VDQ(Iset, AQ_VALID)
+        self._attr('CurrentSetpoint').set_write_value(Iset)
+
     def query_TriggerMask(self):
         if 'TriggerMask' in self.cache:
             return self.cache['TriggerMask']
@@ -1090,7 +1109,7 @@ factory.add_ec_attr('CurrentSetpoint', 'CUR', rw=READ_WRITE,
     extra={'format' : FMT},
 )
 
-factory.add_ec_attr('Current', 'ADC',
+factory.add_ec_attr('Current', 'ADC', rw=READ_WRITE,
     extra={'format' : FMT}
 )
 factory.add_ec_attr('CurrentRamp', 'RTC', rw=READ_WRITE,
@@ -1273,14 +1292,8 @@ class BrukerEC_Cabinet(PS.PowerSupply):
                 self.set_status('cabinet %s okay' % self.IpAddress)
 
         except socket.timeout:
-            self.set_state(DevState.ALARM)
-            self.set_status('communication timeout')
+            self.STAT.set_stat2(DevState.ALARM, 'communication timeout')
             raise
-
-        except cabinet.CanBusTimeout:
-            self.set_state(DevState.FAULT)
-            self.set_status('CAN bus hanging')
-            sleep(1)
 
     @PS.CommandExc
     def Command(self, command_list):
