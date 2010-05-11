@@ -1,22 +1,21 @@
 #!/bin/sh
 
 ## Generic launcher script for Python DS.
-## Please note that copies of SERVER.py residing in the current directory
-## will be preferred over the version in $SICILIA/ds
 
-# map input arguments to names variables
+# maps input arguments to variables with speaking names
 SERVER=`basename $0`
 INST=$1
 shift
-# setup enviroment
+
+# prepares enviroment
 SERVERPATH="$SICILIA/ds/python/BrukerEC_PS"
 PYTHONPATH+=":$SERVERPATH"
-
 CMD="/usr/bin/python BrukerEC_PS.py $INST $*"
-SCREEN="screen -dmS $SERVER/$INST"
+SCREEN="screen -dmS $SERVER.$INST"
+
 echo $SERVERPATH
-cd $SERVERPATH || exit 1
 echo $CMD
+cd $SERVERPATH || exit 1
 if [ "$INST" = "-?" ]
 then
     $CMD
