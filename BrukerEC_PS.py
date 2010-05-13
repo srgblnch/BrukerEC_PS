@@ -21,6 +21,10 @@
 
 from __future__ import print_function
 
+__version__ = "$Revision: 68852 $"
+# $Source$
+
+
 class Release:
     author = "Lothar Krause <lkrause@cells.es> for CELLS / ALBA synchrotron"
     date = "2010-03-29"
@@ -272,7 +276,7 @@ class BrukerEC_PS(PS.PowerSupply):
 
         return vdq
 
-    def value(self, aname, query='auto', dflt=None):
+    def value(self, aname, dflt=None, query='auto'):
         '''Returns the value of aname, or throws an Exception.
            @param aname name of the attribute desired
            @param query will be passed to @see vdq
@@ -280,7 +284,11 @@ class BrukerEC_PS(PS.PowerSupply):
         '''
         vdq = self.vdq(aname, query=query, dflt=dflt)
         if vdq.quality == AQ_INVALID:
-             raise AttributeInvalid(aname)
+            if dflt is None:
+                raise AttributeInvalid(aname)
+            else:
+                return dflt
+      
         return vdq.value
 
     def update_attr(self, aname):
@@ -685,16 +693,17 @@ class BrukerEC_PS(PS.PowerSupply):
       self.vdq_set(attr)
 
     def query_Waveform(self):
-        if self.wave_load and 'Waveform' in self.cache:
+        if 'Waveform' in self.cache:
             vdq = self.cache['Waveform']
-            vdq.quality = AQ_CHANGING
-            return vdq
-
-        # if not an upload is initiated
-        elif self.wave_load is None:
-            self.UploadWaveform()
+            if self.wave_load:
+                vdq.quality = AQ_CHANGING      
+        else: 
             vdq = self.cache['Waveform'] = VDQ([], q=AQ_INVALID)
-            return vdq
+            # if no upload was initiated so far, start one now
+            # possibly this should be done by the init_device thing
+            if self.wave_load is None:
+                self.UploadWaveform()
+        return vdq
 
     def query_WaveX(self):
         N = len(self.value('Waveform'))
@@ -793,7 +802,8 @@ class BrukerEC_PS(PS.PowerSupply):
     def push_wave_down(self, waveform):
         '''Called after waveform has been downloaded.
         '''
-        self.cache['Waveform'] = VDQ(waveform, time(), AQ_VALID)
+        t0 = time()
+        self.cache['Waveform'] = VDQ(waveform, t0, AQ_VALID)
         self.update_attr('WaveLength')
         self.update_attr('WaveDuration')
         Inominal = self.get_nominal_y()[1]
@@ -886,7 +896,7 @@ class BrukerEC_PS(PS.PowerSupply):
             self.push_changing('WaveDuration')
             self.push_changing('WaveStatus', dl.BASE_MSG+' pending')
             self.push_changing('WaveId')
-            self.push_vdq('WaveName', self.value('WaveName'), q=AQ_ALARM)
+            self.push_vdq('WaveName', self.value('WaveName','None'), q=AQ_ALARM)
 
             # finally record for later use
             # self.store_wave()
@@ -1120,7 +1130,7 @@ factory.add_ec_attr('CurrentSetpoint', 'CUR', rw=READ_WRITE,
     extra={'format' : FMT},
 )
 
-factory.add_ec_attr('Current', 'ADC', rw=READ_WRITE,
+factory.add_ec_attr('Current', 'ADC', rw=READ,
     extra={'format' : FMT}
 )
 factory.add_ec_attr('CurrentRamp', 'RTC', rw=READ_WRITE,
@@ -1128,17 +1138,6 @@ factory.add_ec_attr('CurrentRamp', 'RTC', rw=READ_WRITE,
 )
 factory.add_ec_attr('Voltage', 'ADV',
     extra={'format' : FMT}
-)
-factory.add_ec_attr('WaveOffset', 'WOF', rw=READ_WRITE,
-    extra={'format' : FMT, 'unit':'A' }, query='force'
-)
-
-# Waveform Handling
-factory.add_ec_attr('WaveLength', 'WLN', tp=DevShort, extra={'unit':'points'},
-   query='force'
-)
-factory.add_ec_attr('WaveGeneration', 'WMO', rw=READ_WRITE, tp=DevBoolean,
-     extra = { 'format' : '%1d' }
 )
 
 factory.add_ec_attr('TriggerMask', 'WTR', rw=READ_WRITE, tp=DevLong,
@@ -1151,18 +1150,33 @@ factory.add_ec_attr('CurrentRMS', 'ARM', tp=DevDouble,
     extra = { 'format' : FMT, 'description' : 'Current RMS value' }
 )
 
+# Waveform Handling
+factory.add_ec_attr('WaveOffset', 'WOF', rw=READ_WRITE,
+    extra={'format' : FMT, 'unit':'A' , 'label':'Offset'}, query='force'
+)
+
+factory.add_ec_attr('WaveLength', 'WLN', tp=DevShort, extra={'unit':'points', 'label' : 'Length' },
+   query='force'
+)
+factory.add_ec_attr('WaveGeneration', 'WMO', rw=READ_WRITE, tp=DevBoolean,
+     extra = { 'format' : '%1d' }
+)
+
+
+
 factory.add_ec_attr('WaveInterpolation', 'WST', rw=READ_WRITE, tp=DevShort,
     extra={'min value':0, 'max value' : 5,
            'description' : 'Indicates the number of waveform points to be '+
                            'interpolated per regulation period. Valid values '+
                            'range from 0 to 5 corresponding to the powers of '+
                            '2 between 0 and 32.',
+            'label' : 'Interpolation',
             'format' : '%1d',
-            'unit':'log2(periods/point)'
+            'unit':'*'
         },
 )
-factory.add_attribute('WaveStatus', tp=DevString)
-factory.add_attribute('WaveName', tp=DevString, extra=dict(Memorized=True))
+factory.add_attribute('WaveStatus', tp=DevString, extra=dict(label='Status'))
+factory.add_attribute('WaveName', rw=READ_WRITE, tp=DevString, extra=dict(Memorized=True, label='Ramp'))
 
 factory.add_cmd('ObjInt',
     [DevShort,'cobj id to read'],
@@ -1181,7 +1195,8 @@ factory.add_attribute('RegulationFrequency', tp=DevDouble,extra={
 
 factory.add_attribute('WaveDuration', tp=DevDouble, extra={
     'unit' : 'ms',
-    'description' : 'how much time it takes to pass the wave form'
+    'description' : 'how much time it takes to pass the wave form',
+    'label' : 'Duration'
 })
 
 factory.add_attribute('WaveId', tp=DevLong, extra={
@@ -1251,9 +1266,11 @@ class BrukerEC_Cabinet(PS.PowerSupply):
 
     @PS.ExceptionHandler
     def delete_device(self):
+        self.STAT.DELETE()
         self.cab.stop()
         self.cab.disconnect_exc()
         self.wavl.disconnect_exc()
+        self.STAT.DELETED()
 
     #### Attributes ####
     def query_RemoteMode(self):
