@@ -38,6 +38,8 @@ from threading import RLock, Lock, Thread, Semaphore
 from collections import deque
 import logging
 from types import NoneType
+import numpy as numpy
+from zlib import crc32
 
 WAVE_PORT = 3702
 TERM = '\r\n'
@@ -63,7 +65,7 @@ def calc_hash(I, wav):
         @param I nominal current of the power supply
     '''
     dat = (int(I),) + to_raw(I, wav)
-    ar = np.array(dat, np.int32)
+    ar = numpy.array(dat, numpy.int32)
     return crc32(ar.data)
 
 def instance():
