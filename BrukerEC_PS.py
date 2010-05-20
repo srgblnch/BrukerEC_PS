@@ -179,7 +179,8 @@ class BrukerEC_PS(PS.PowerSupply):
     __errors = []
 
     PUSHED_ATTR = ('Current', 'CurrentSetpoint', 'Voltage',
-      'MachineState', 'ErrorCode', 'State', 'Status')
+      'MachineState', 'ErrorCode', 'State', 'Status', 
+      'WaveStatus')
 
     def __init__(self, cl, name):
         PS.PowerSupply.__init__(self, cl, name)
@@ -248,7 +249,7 @@ class BrukerEC_PS(PS.PowerSupply):
         return vdq
 
     def push_vdq(self, aname, *args, **kwargs):
-        vdq = self.cache[aname] = VDQ(*args, **kwargs)
+        self.cache[aname] = vdq = VDQ(*args, **kwargs)
         self.push_change_event(aname, *vdq.triple)
 
     def vdq(self, aname, query='auto', dflt=None, dflt_q=AQ_INVALID):
@@ -896,7 +897,8 @@ class BrukerEC_PS(PS.PowerSupply):
             self.push_changing('WaveDuration')
             self.push_changing('WaveStatus', dl.BASE_MSG+' pending')
             self.push_changing('WaveId')
-            self.push_vdq('WaveName', self.value('WaveName','None'), q=AQ_ALARM)
+                        
+            self.push_vdq('WaveName', v=self.value('WaveName',''), q=AQ_ALARM)
 
             # finally record for later use
             # self.store_wave()
@@ -1053,6 +1055,7 @@ class BrukerEC_PS(PS.PowerSupply):
     @PS.AttrExc
     def write_WaveName(self, attr):
         self.cache['WaveName'] = VDQ(attr.get_write_value(), q=AQ_VALID)
+
 
 class BrukerEC_PS_Class(PS.PowerSupply_Class):
 
@@ -1270,7 +1273,6 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         self.cab.stop()
         self.cab.disconnect_exc()
         self.wavl.disconnect_exc()
-        self.STAT.DELETED()
 
     #### Attributes ####
     def query_RemoteMode(self):
