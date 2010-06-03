@@ -44,6 +44,8 @@ class PSType(object):
        in particular interpretation of error flags.
     '''
 
+    has_trigger_mask = False
+
     REG_PARAM = {
         'BuckV' : RP(0x2041, w=0),
         'BuckV_Kp' : RP(0x2055),
@@ -80,20 +82,22 @@ class PSType(object):
 
 class PSType_4Q(PSType):
 
-      REG_PARAM = {
-        'BuckV' : RP(0x200B,1, w=0),
-        'BuckI_Kp' : RP(0x2026,1),
-        'BuckI_Ki' : RP(0x2024,1),
-        'BuckV_Kp' : RP(0x2029,1),
-        'BuckV_Ki' : RP(0x2027,1),
+    has_trigger_mask = True
 
-        'MainI_Kp' : RP(0x2026,0),
-        'MainI_Ki' : RP(0x2024,0),
-        'MainV_Kp' : RP(0x2029,0),
-        'MainV_Ki' : RP(0x2027,0),
-      }
+    REG_PARAM = {
+    'BuckV' : RP(0x200B,1, w=0),
+    'BuckI_Kp' : RP(0x2026,1),
+    'BuckI_Ki' : RP(0x2024,1),
+    'BuckV_Kp' : RP(0x2029,1),
+    'BuckV_Ki' : RP(0x2027,1),
 
-      def query_Voltage(self, impl):
+    'MainI_Kp' : RP(0x2026,0),
+    'MainI_Ki' : RP(0x2024,0),
+    'MainV_Kp' : RP(0x2029,0),
+    'MainV_Ki' : RP(0x2027,0),
+    }
+
+    def query_Voltage(self, impl):
         cmd = impl.cab.command
         master = impl.Port+1
         cmd_adv = lambda p: float(cmd(p, 'ADV/'))
@@ -102,7 +106,10 @@ class PSType_4Q(PSType):
 
 class PSType_4QC(PSType_4Q):
 
-      def query_Voltage(self, impl):
+    has_trigger_mask = True
+
+
+    def query_Voltage(self, impl):
         cmd = impl.cab.command
         cmd_adv = lambda p: float(cmd(p, 'ADV/'))
         adv_master = cmd_adv(impl.Port+1)

@@ -179,7 +179,7 @@ class BrukerEC_PS(PS.PowerSupply):
     __errors = []
 
     PUSHED_ATTR = ('Current', 'CurrentSetpoint', 'Voltage',
-      'MachineState', 'ErrorCode', 'State', 'Status', 
+      'MachineState', 'ErrorCode', 'State', 'Status',
       'WaveStatus')
 
     def __init__(self, cl, name):
@@ -289,7 +289,7 @@ class BrukerEC_PS(PS.PowerSupply):
                 raise AttributeInvalid(aname)
             else:
                 return dflt
-      
+
         return vdq.value
 
     def update_attr(self, aname):
@@ -670,9 +670,6 @@ class BrukerEC_PS(PS.PowerSupply):
     def is_WaveGeneration_allowed(self, write):
         return not write or self.is_power_off()
 
-    def is_CurrentSetpoint_allowed(self, write):
-        return not write or self.is_dc_mode()
-
     def is_Voltage_allowed(self, read_or_write):
         PU.nop(read_or_write)
         return self.is_dc_mode()
@@ -697,8 +694,8 @@ class BrukerEC_PS(PS.PowerSupply):
         if 'Waveform' in self.cache:
             vdq = self.cache['Waveform']
             if self.wave_load:
-                vdq.quality = AQ_CHANGING      
-        else: 
+                vdq.quality = AQ_CHANGING
+        else:
             vdq = self.cache['Waveform'] = VDQ([], q=AQ_INVALID)
             # if no upload was initiated so far, start one now
             # possibly this should be done by the init_device thing
@@ -822,20 +819,22 @@ class BrukerEC_PS(PS.PowerSupply):
         ix = tuple( dt*r for r in xrange(n) )
         return ix
 
-    def query_Writeable(self):
-        return self.value('WaveGeneration') and self.is_power_on() and self.value('TriggerMask')==0
-
     def ramp_off(self):
-        if 'TriggerMask' in self.cache:
-            vdq = self.vdq('TriggerMask')
-            if vdq.quality==AQ_INVALID:
-                return DevState.UNKNOWN
-            elif vdq.value in (0,1):
-                return 0
+        if self.pstype().has_trigger_mask:
+            if 'TriggerMask' in self.cache:
+                vdq = self.vdq('TriggerMask')
+                if vdq.quality==AQ_INVALID:
+                    return DevState.UNKNOWN
+                elif vdq.value in (0,1):
+                    return 0
+                else:
+                    return vdq.value
             else:
-                return vdq.value
+                return DevState.UNKNOWN
         else:
+            self.cmd('DCP=0')
             return DevState.UNKNOWN
+
 
     def ramp_restore(self, old_state):
         if old_state is DevState.UNKNOWN:
@@ -897,12 +896,9 @@ class BrukerEC_PS(PS.PowerSupply):
             self.push_changing('WaveDuration')
             self.push_changing('WaveStatus', dl.BASE_MSG+' pending')
             self.push_changing('WaveId')
-                        
+
             self.push_vdq('WaveName', v=self.value('WaveName',''), q=AQ_ALARM)
 
-            # finally record for later use
-            # self.store_wave()
-            return
         finally:
             self.ramp_restore(old_ramp_state)
 
@@ -947,7 +943,7 @@ class BrukerEC_PS(PS.PowerSupply):
         return value
 
     @PS.AttrExc
-    def write_Current(self, attr):
+    def write_CurrentSetpoint(self, attr):
         # gets write value
         Iset = attr.get_write_value()
         slope = self.value('CurrentRamp')
@@ -1056,6 +1052,9 @@ class BrukerEC_PS(PS.PowerSupply):
     def write_WaveName(self, attr):
         self.cache['WaveName'] = VDQ(attr.get_write_value(), q=AQ_VALID)
 
+
+    def write_attributes(self, *args, **kwargs):
+        self._trace = str(args)
 
 class BrukerEC_PS_Class(PS.PowerSupply_Class):
 
