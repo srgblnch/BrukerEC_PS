@@ -21,10 +21,6 @@
 
 from __future__ import print_function
 
-__version__ = "$Revision: 68852 $"
-# $Source$
-
-
 class Release:
     author = "Lothar Krause <lkrause@cells.es> for CELLS / ALBA synchrotron"    
     last_changed_by = '$Author:$'
@@ -34,7 +30,7 @@ class Release:
     id = '$Id: $'
     version = '$URL$'.split('/')[-2]
     @classmethod 
-    def __str__(self): return 
+    def __str__(self): return "%s %s %s " % (self.author, self.date, self.version)
 
 # python standard imports
 import sys
