@@ -5,10 +5,11 @@ import sys
 import socket
 from threading import Thread, RLock, Event, Semaphore
 from time import time, sleep
+import telnetlib
 import logging
 from PyTango import Except, DevFailed, DevState
 
-from ps_util import txt, FriendlySocket, UniqList, bit_filter_msg, nop
+from ps_util import FriendlySocket, UniqList, bit_filter_msg, nop
 import ps_standard as PS
 from copy import copy
 
@@ -33,7 +34,6 @@ ERROR_RESPONSE = {
 PAYLOAD_OFFSET = 4
 
 DEFAULT_EC_PORT = 3701
-DEFAULT_CONNECT_TIMEOUT = 0.75
 RELAY_PORT = 19
 
 _CAB = None
@@ -54,7 +54,7 @@ class UpdateThread(Thread):
         self.register = []
         self.busy = Event()
         self.running = True
-        self.throttle = 0.5
+        self.throttle = 0.2
         self.cycle = 0
         self.last_exc = None
         self.update_t = None
@@ -106,6 +106,7 @@ class UpdateThread(Thread):
         if not self.register and self.running:
             self.busy.clear()
 
+
     def __del__(self):
         self.running = False
         self.register = []
@@ -127,12 +128,15 @@ class CabinetControl(object):
     cab_port = None
     errors = None
     state_id = None
+    # when CAN bus hangs this flag will be true
+    # reset it by explicit assignment or by calling update_state
+    can_hang = False
 
     def __init__(self):
         self.log = logging.getLogger(self.__class__.__name__)
         self.active_port = None
         self.comm = FriendlySocket()
-        self.comm.timeout = DEFAULT_CONNECT_TIMEOUT
+        self.comm.read_timeout = 0.5
         # locks link to Ethernet bridge
         self.lck = RLock()
         self.log = logging.getLogger('cab')
@@ -145,6 +149,9 @@ class CabinetControl(object):
         self.desc = 'generic'
         self.stat = None
         self.init_counter = 0
+  
+    is_connected = property(lambda self: self.comm.is_connected)
+
 
     def all_initialized(self):
         return self.init_counter==len(self.updater.register)
@@ -171,26 +178,31 @@ class CabinetControl(object):
         self.comm.connect(host, DEFAULT_EC_PORT, connect=False)
         self.type_hint = type_hint
 
+
     def reconnect(self):
         '''Tries to etablish connection with 'host' (if configured).
            Returns True if the connection status went from down to up
         '''
-        if self.comm.is_connected: return False
         self.comm.reconnect()
 
-        # Determines the type of the cabinet used.
-        if self.__class__ is not CabinetControl: return self.comm.is_connected
-        if self.type_hint==0:
-            # queries first port for the power supply it controls
-            ver = self.command_seq(0,'OBJ=%d'%state.COBJ_VERSION,'VAL/')[1]
-            pst = int(ver,16) & TYPE_MASK
-        else:
-            pst = self.type_hint
+        try:
+            # Determines the type of the cabinet used.
+            if self.__class__ is not CabinetControl: return self.is_connected
+            if self.type_hint==0:
+                # queries first port for the power supply it controls
+                ver = self.command_seq(0,'OBJ=%d'%state.COBJ_VERSION,'VAL/')[1]
+                pst = int(ver,16) & TYPE_MASK
+            else:
+                pst = self.type_hint
 
-        self.init_counter += 1
-        # decides type of cabinet based on first PS it control
-        self.__class__, self.desc = CAB_CT[pst]
-        return self.comm.is_connected
+            self.init_counter += 1
+            # decides type of cabinet based on first PS it control
+            self.__class__, self.desc = CAB_CT[pst]
+
+        except Exception:
+            raise
+
+        return self.is_connected
 
     def get_alarms(self, mask=0):
         word = (self.error_code & ~mask)
@@ -199,9 +211,13 @@ class CabinetControl(object):
         return bit_filter_msg(word, self.errors)
 
     def reset_interlocks(self):
-        self.command_seq(self.port, 'RST=0')
+        raise Exception('not implemented')
 
-    def command_seq(self, port, *cmd_list):
+    def reset_interlocks_p(self, port):
+        if self.is_connected:
+            self.command_seq(port, 'RST=0') 
+
+    def command_seq(self, port, *cmd_list, **kwargs):
         """Executes a series of commands for a specific channel,
            without allowing other commands to interfere.
            This method is thread safe (unlike most others).
@@ -213,19 +229,20 @@ class CabinetControl(object):
                 r.append(self._command(cmd))
             return r
 
-
     def command(self, port, cmd):
         """Executes a command for a specific channel.
            This method is thread safe (unlike most others).
         """
         with self.lck:
             self.switch_port(port)
-            return self._command(cmd)
-
+            r = self._command(cmd)
+            return r
 
     def _command(self, cmd):
         if not self.comm.is_connected:
             raise PS.PS_Exception('control %s not connected' % self.comm.hopo)
+        if self.can_hang:
+            raise CanBusTimeout('CAN bus is hung')
         cmd = cmd.upper().strip()
         COM = self.comm
         try:
@@ -240,11 +257,11 @@ class CabinetControl(object):
             elif response[0]=='*':
                 tup =  (self.comm.host, self.active_port, cmd)
                 msg = "CAN bus %s, port %s timed out, command %s" % tup
-                raise CanBusTimeout(msg)
+                self.can_hang = True
+                raise CanBusTimeout(msg)            
 
-        except socket.error, exc:
-                msg = '%s: %s' % (self.host,exc)
-                raise PS.PS_Exception(msg)
+        except socket.error, err:
+            raise
 
         payload = response.strip()
         if payload.startswith("E"):
@@ -289,13 +306,29 @@ class CabinetControl(object):
         self.log.error('can not turn off cabinet without relay board')
         raise PS.PS_Exception('cabinet without relay board are always on.')
 
-    def update_state(self):
+    def update_state(self):        
+        self.can_hang = False
         STB = self.command(0, 'STB/')
         self.error_code = check(0, STB)
         rem = bool(int(self.command(0, 'REM/')))
         self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
         return self.error_code
 
+    def telnet(self, commands):
+        tel = telnetlib.Telnet(self.comm.host, timeout=2.5)
+        PS1 = '# '
+        tel.read_until(PS1)
+        ret = ''
+        for c in commands:
+            tel.write(c+'\n')
+            ret += tel.read_until(PS1)
+        tel.write('exit\n')
+        ret += tel.read_very_eager()
+        tel.close()
+        ret += tel.read_all()
+        # sometimes the exit command is contained in the output, sometimes not.
+        self.log.debug('telnet> %r return %r', commands, ret)
+        return ret
 
 
 class STB_Cabinet(CabinetControl):
@@ -314,7 +347,7 @@ class STB_Cabinet(CabinetControl):
 #    MSB and 2 extra bytes used only for Timeout
 
     def reset_interlocks(self):
-        self.command(0, 'RST=0')
+        self.reset_interlocks_p(0)
 
 class DC_Cabinet(STB_Cabinet):
     use_waveforms = False
@@ -322,8 +355,7 @@ class DC_Cabinet(STB_Cabinet):
 class Wave_Cabinet(STB_Cabinet):
     use_waveforms = True
     def reset_interlocks(self):
-        self.command(RELAY_PORT, 'RST=0')
-
+        self.reset_interlocks_p(RELAY_PORT)
 
 class Big_Cabinet(Wave_Cabinet):
 
@@ -335,20 +367,20 @@ class Big_Cabinet(Wave_Cabinet):
         (DS.OFF, 'CONFIG'),
         (DS.OFF, 'cabinet off'),
         (DS.INIT, 'starting cabinet'),
-        (DS.INIT, 'starting cabinet (inrush)'),
-        (DS.STANDBY, 'dc on'),
+        (DS.INIT, 'charging cabinet capacitors...'),
+        (DS.INIT, 'cabinet getting ready'),
         (DS.STANDBY, 'STANDBY'),
         (DS.STANDBY, CAB_READY),
         (DS.MOVING, 'STOPPING'),
         (DS.ALARM, 'fault / interlock'),
-        (DS.INIT, 'starting buck'),
-        (DS.INIT, 'starting 4Q'),
-        (DS.MOVING, 'stopping cabinet'),
+        (DS.INIT, 'switching power supply (buck) on'),
+        (DS.INIT, 'switching power supply (4Q) on...'),
+        (DS.MOVING, 'switching power supply off...'),
         (DS.MOVING, 'ACK_BS'),
         (DS.MOVING, 'ACK_DM'),
         (DS.MOVING, 'ACK_QS'),
         (DS.MOVING, 'ACK_QM'),
-        (DS.MOVING, 'cabinet pre-idle'),
+        (DS.MOVING, 'discharging cabinet capacitors...'),
         (DS.MOVING, '(unused)'),
  #       (DS.MOVING, 'ack. buck
     )
@@ -413,7 +445,7 @@ class Big_Cabinet(Wave_Cabinet):
         self.command(RELAY_PORT, 'DCP=0')
 
     def reset_interlocks(self):
-        self.command(RELAY_PORT, 'RST=0')
+        self.reset_interlocks_p(RELAY_PORT)
 
 CAN_BUS_TIMEOUT_CODE = 0x800000
 class CanBusTimeout(PS.PS_Exception):

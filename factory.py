@@ -20,7 +20,6 @@
 from PyTango import READ, READ_WRITE, DevBoolean, DevDouble, DevString, \
     DevVoid, SCALAR, DevShort, AttrQuality, DevUShort, DevULong, DevLong
 import ps_standard as PS
-from ps_util import txt
 from time import time
 
 VDQ = PS.VDQ

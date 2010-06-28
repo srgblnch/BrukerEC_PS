@@ -40,6 +40,7 @@ import logging
 from types import NoneType
 import numpy as numpy
 from zlib import crc32
+import socket
 
 WAVE_PORT = 3702
 TERM = '\r\n'
@@ -141,9 +142,11 @@ class WaveformLoader(object):
         _WAVL = self
         self.log = logging.getLogger(self.log_name)
         self.sok = PU.FriendlySocket()
-        self.timeout = self.sok.timeout
+        self.sok.reconnect_timeout = 1
         # locks the socket used for up and downloading
         self.soklock = RLock()
+
+    is_connected = property(lambda self: self.sok.is_connected)
 
     def connect(self, host):
         self.sok.connect(host, WAVE_PORT)
@@ -253,3 +256,14 @@ class WaveformLoader(object):
         r = self.sok.readline().strip()
         self.log.debug('cancel: %s',r)
         return r
+
+    def reset_interlocks(self, restart):
+        if self.sok.is_connected: return
+        try:
+            self.reconnect()
+        except socket.error,err:
+            if err.errno==111:
+                restart()                
+            else:
+                raise
+        
