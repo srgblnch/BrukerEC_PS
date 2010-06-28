@@ -26,12 +26,15 @@ __version__ = "$Revision: 68852 $"
 
 
 class Release:
-    author = "Lothar Krause <lkrause@cells.es> for CELLS / ALBA synchrotron"
-    date = "2010-03-29"
-    release = "sourceforge 1.8"
-    hexversion = 0x010802
-
-Release.__str__ = lambda self: "%06x" % self.hexversion
+    author = "Lothar Krause <lkrause@cells.es> for CELLS / ALBA synchrotron"    
+    last_changed_by = '$Author:$'
+    date = "$Date"
+    revision = '$Revision: $'
+    url = '$URL$'
+    id = '$Id: $'
+    version = '$URL$'.split('/')[-2]
+    @classmethod 
+    def __str__(self): return 
 
 # python standard imports
 import sys
