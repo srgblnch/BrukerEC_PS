@@ -22,13 +22,13 @@
 from __future__ import print_function
 
 class Release:
-    author = "Lothar Krause <lkrause@cells.es> for CELLS / ALBA synchrotron"    
+    author = "Lothar Krause <lkrause@cells.es> for CELLS / ALBA synchrotron"
     last_changed_by = '$Author$'
-    date = "$Date"
+    date = "$Date$"
     revision = '$Revision$'
     url = '$URL$'
     id = '$Id$'
-    version = '$URL$'.split('/')[-2]
+    version = url.split('/')[-2]
     @classmethod 
     def __str__(self): return "%s %s %s " % (self.author, self.date, self.version)
 
@@ -388,6 +388,10 @@ class BrukerEC_PS(PS.PowerSupply):
                 # set sane write value for CurrentSetpoint
                 cur = float(self.cmd_seq('CUR/')[0])
                 self._attr('CurrentSetpoint').set_write_value(cur)
+
+                # sets sane write value for WaveGeneration
+                wgen = self.update_attr('WaveGeneration')
+                self._attr('WaveGeneration').set_write_value(wgen)
 
                 self.UploadWaveform()
 
@@ -1335,8 +1339,8 @@ class BrukerEC_Cabinet(PS.PowerSupply):
     def UpdateState(self):
         try:
             self.cab.reconnect()
-            self.alarms.clear()
             code = st = self.cab.update_state()
+            self.alarms.clear()
             self._ErrorCode = VDQ(code, q=AQ_VALID)
             self.alarms += self.cab.get_alarms()
             if self.alarms:

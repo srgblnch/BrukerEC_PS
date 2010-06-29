@@ -136,7 +136,7 @@ class CabinetControl(object):
         self.log = logging.getLogger(self.__class__.__name__)
         self.active_port = None
         self.comm = FriendlySocket()
-        self.comm.read_timeout = 0.5
+        self.comm.read_timeout = 1.25
         # locks link to Ethernet bridge
         self.lck = RLock()
         self.log = logging.getLogger('cab')
@@ -181,27 +181,32 @@ class CabinetControl(object):
 
     def reconnect(self):
         '''Tries to etablish connection with 'host' (if configured).
-           Returns True if the connection status went from down to up
+           Returns True when connected.
         '''
         self.comm.reconnect()
 
-        try:
-            # Determines the type of the cabinet used.
-            if self.__class__ is not CabinetControl: return self.is_connected
-            if self.type_hint==0:
-                # queries first port for the power supply it controls
-                ver = self.command_seq(0,'OBJ=%d'%state.COBJ_VERSION,'VAL/')[1]
-                pst = int(ver,16) & TYPE_MASK
-            else:
-                pst = self.type_hint
+        # Determines the type of the cabinet used.
+        # NOTE: from typical OO style self-modifying code such as changing 
+        #       the type of an object at run-time, could lead to behavior
+        #       that is difficult to predict. Since the new behavior
+        #       is given by a sub-class and is done only once, I hope the
+        #       mess is limited. This could be moved into BrukerEC_Cabinet.
+        #       For now it works fine and I will leave it as is.
 
-            self.init_counter += 1
-            # decides type of cabinet based on first PS it control
-            self.__class__, self.desc = CAB_CT[pst]
+        # Leaves reconnect() when type of cabinet has already been determined successfully.
+        if self.__class__ is not CabinetControl: return self.is_connected
+        # guranted that the following lines are executed until being successful once,
+        # in the sense that no exception is thrown
+        if self.type_hint==0:
+            # queries first port for the power supply it controls
+            ver = self.command_seq(0,'OBJ=%d'%state.COBJ_VERSION,'VAL/')[1]
+            pst = int(ver,16) & TYPE_MASK
+        else:
+            pst = self.type_hint
 
-        except Exception:
-            raise
-
+        self.init_counter += 1
+        # re-assigns __class__ only if execution was successful
+        self.__class__, self.desc = CAB_CT[pst]
         return self.is_connected
 
     def get_alarms(self, mask=0):
@@ -223,26 +228,28 @@ class CabinetControl(object):
            This method is thread safe (unlike most others).
         """
         with self.lck:
+            force = kwargs.get('force', False)
             self.switch_port(port)
-            r = []
+            r = []            
             for cmd in cmd_list:
-                r.append(self._command(cmd))
+                r.append(self._command(cmd, force=force))
             return r
 
-    def command(self, port, cmd):
+    def command(self, port, cmd, **kwargs):
         """Executes a command for a specific channel.
            This method is thread safe (unlike most others).
         """
         with self.lck:
+            force = kwargs.get('force', False)
             self.switch_port(port)
-            r = self._command(cmd)
+            r = self._command(cmd, force=force)
             return r
 
-    def _command(self, cmd):
+    def _command(self, cmd, force=False):
         if not self.comm.is_connected:
             raise PS.PS_Exception('control %s not connected' % self.comm.hopo)
-        if self.can_hang:
-            raise CanBusTimeout('CAN bus is hung')
+        if self.can_hang and not force:
+            raise CanBusTimeout('CAN bus is hung, or busy')
         cmd = cmd.upper().strip()
         COM = self.comm
         try:
@@ -276,8 +283,8 @@ class CabinetControl(object):
 
         port = str(port)
         if port!=self.active_port:
-            self._command("PRT="+port)
-            assert str(port) == self._command("PRT/")
+            self._command("PRT="+port, force=True)
+            assert str(port) == self._command("PRT/", force=True)
             self.active_port = port
 
     def __del__(self):
@@ -307,11 +314,11 @@ class CabinetControl(object):
         raise PS.PS_Exception('cabinet without relay board are always on.')
 
     def update_state(self):        
+        STB = self.command(0, 'STB/', force=True)
         self.can_hang = False
-        STB = self.command(0, 'STB/')
         self.error_code = check(0, STB)
         rem = bool(int(self.command(0, 'REM/')))
-        self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
+        self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)        
         return self.error_code
 
     def telnet(self, commands):
@@ -420,7 +427,8 @@ class Big_Cabinet(Wave_Cabinet):
 
 
     def update_state(self):
-        STB = self.command(RELAY_PORT, 'STB/')
+        STB = self.command(RELAY_PORT, 'STB/', force=True)
+        self.can_hang = False
         self.error_code = check(RELAY_PORT, STB)
         STC = self.command(RELAY_PORT, 'STC/')
         self.state_id = check(RELAY_PORT, STC)
