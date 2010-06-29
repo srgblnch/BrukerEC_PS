@@ -143,6 +143,7 @@ class WaveformLoader(object):
         self.log = logging.getLogger(self.log_name)
         self.sok = PU.FriendlySocket()
         self.sok.reconnect_timeout = 1
+	self.sok.read_timeout = 1.25
         # locks the socket used for up and downloading
         self.soklock = RLock()
 
