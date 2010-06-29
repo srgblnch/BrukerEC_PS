@@ -30,7 +30,7 @@ class Release:
     id = '$Id$'
     version = url.split('/')[-2]
     @classmethod 
-    def __str__(self): return "%s %s %s " % (self.author, self.date, self.version)
+    def __str__(cls): return "%s %s %s " % (cls.author, cls.date, cls.version)
 
 # python standard imports
 import sys
@@ -1069,9 +1069,6 @@ class BrukerEC_PS(PS.PowerSupply):
 	wave_name = attr.get_write_value()
         self.cache['WaveName'] = VDQ(wave_name, q=AQ_VALID)
 	DB.put_device_property(self.get_name(), { 'WaveName' : wave_name })
-
-    def write_attributes(self, *args, **kwargs):
-        self._trace = str(args)
 
 class BrukerEC_PS_Class(PS.PowerSupply_Class):
 
