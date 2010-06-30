@@ -111,8 +111,8 @@ class PSType_4QC(PSType_4Q):
       def query_Voltage(self, impl):
         cmd = impl.cab.command
         cmd_adv = lambda p: float(cmd(p, 'ADV/'))
-        adv_master = cmd_adv(impl.Port+1)
-        adv_slave = cmd_adv(impl.Port+3)
+        adv_master = cmd_adv(impl.Port+0)
+        adv_slave = cmd_adv(impl.Port+2)
         return PS.VDQ(adv_master+adv_slave, q=PS.AQ_VALID)
 
 # the integers are used as symbolic constants
