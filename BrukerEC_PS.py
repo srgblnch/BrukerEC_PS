@@ -29,7 +29,7 @@ class Release:
     url = '$URL$'
     id = '$Id$'
     version = url.split('/')[-2]
-    @classmethod 
+    @classmethod
     def __str__(cls): return "%s %s %s " % (cls.author, cls.date, cls.version)
 
 # python standard imports
@@ -203,7 +203,7 @@ class BrukerEC_PS(PS.PowerSupply):
             WaveDuration = VDQ(0.0),
             WaveStatus = VDQ(wavl.READY, q=AQ_VALID),
             WaveId = VDQ(0, q=AQ_INVALID),
-            WaveName = VDQ(self.WaveName, q=AQ_VALID)           
+            WaveName = VDQ(self.WaveName, q=AQ_VALID)
         )
         # when moving is expected to be finished
         self.move_fin = 0
@@ -450,7 +450,7 @@ class BrukerEC_PS(PS.PowerSupply):
             diff_t = time()-start_t
             self.wave_load = None
             msg = load.BASE_MSG+' finished %.2fs' % diff_t
-            self.push_vdq('WaveStatus', msg, q=AQ_VALID)            
+            self.push_vdq('WaveStatus', msg, q=AQ_VALID)
 
         except PS.PS_Exception, exc:
             msg = load.BASE_MSG+' error: '+str(exc)
@@ -458,7 +458,7 @@ class BrukerEC_PS(PS.PowerSupply):
             self.push_vdq('WaveStatus', msg, q=AQ_ALARM)
             traceback.print_exc()
 
-        except socket.error, err:       
+        except socket.error, err:
             err_msg = str(err)
             self._alarm('waveforms %s' % err_msg)
             ws = load.BASE_MSG+' failed: '+err_msg
@@ -481,7 +481,11 @@ class BrukerEC_PS(PS.PowerSupply):
             if self.cab.comm._exc_msg:
                 self.STAT.ALARM(self.cab.comm._exc_msg)
             else:
-                self.STAT.ALARM('no connection to control unit') 
+                self.STAT.ALARM('no connection to control unit')
+            return
+
+        # skips update when loading waveforms, instead of hanging
+        if self.wavl.busy:
             return
 
         try:
@@ -744,14 +748,14 @@ class BrukerEC_PS(PS.PowerSupply):
                 msg = fun
             raise WaveDisabled(msg)
 
-    @PS.AttrExc 
+    @PS.AttrExc
     def write_WaveGeneration(self, attr):
         self.log.debug('writing wave generation')
         self._check_use_waveforms('WaveGeneration')
         val = attr.get_write_value()
         self.cmd('WMO=%s' % int(val))
-        self.update_attr('WaveGeneration')            
-        self.update_attr('Voltage')            
+        self.update_attr('WaveGeneration')
+        self.update_attr('Voltage')
 
     @PS.AttrExc
     def write_WaveX(self,attr):
@@ -1319,7 +1323,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
     @PS.CommandExc
     def ResetInterlocks(self):
         PS.PowerSupply.ResetInterlocks(self)
-        self.cab.command_seq(self.Port, 'RST=0') 
+        self.cab.command_seq(self.Port, 'RST=0')
 
     def restart_bsw_tcp(self, *args):
         self.STAT.set_stat2(Tg.DevState.UNKNOWN, 'restarting bsw server...')
@@ -1334,6 +1338,12 @@ class BrukerEC_Cabinet(PS.PowerSupply):
 
     @PS.CommandExc
     def UpdateState(self):
+
+        # skips update while wavl is busy
+        if self.wavl.busy:
+            self.STAT.MOVING(self.wavl.busy)
+            return
+
         try:
             self.cab.reconnect()
             code = st = self.cab.update_state()
@@ -1344,7 +1354,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
                 self.STAT.ALARM(self.alarms[0])
             else:
                 self.STAT.ON('cabinet %s okay' % self.IpAddress)
-            self.wavl.reconnect() 
+            self.wavl.reconnect()
 
         except socket.timeout:
             self.STAT.ALARM('communication timeout')
@@ -1367,7 +1377,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
 
         if self.cab.use_waveforms:
             try:
-                self.wavl.reconnect()                  
+                self.wavl.reconnect()
             except socket.error, err:
                 self.STAT.FAULT(Str(err))
                 return

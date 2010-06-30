@@ -34,7 +34,7 @@ from time import sleep, time
 import PyTango as Tg
 import ps_util as PU
 import ps_standard as PS
-from threading import RLock, Lock, Thread, Semaphore
+from threading import Lock, Thread
 from collections import deque
 import logging
 from types import NoneType
@@ -104,6 +104,7 @@ class Download(Load):
         impl.push_wave_down(self.wave)
         return rval
 
+
 class Upload(Load):
 
     BASE_MSG = 'upload'
@@ -121,7 +122,6 @@ class Upload(Load):
       return rval
 
 
-
 class WaveformException(PS.PS_Exception):
 
     def __init__(self, response):
@@ -130,12 +130,21 @@ class WaveformException(PS.PS_Exception):
         text = response[5:]
         PS.PS_Exception.__init__(self, text)
 
+def busy(f, msg):
+    def busy(self, *args,**kwargs):
+        self.busy = msg
+        try:
+            return f(self,*args,**kwargs)
+        finally:
+            self.busy = None
+
 class WaveformLoader(object):
     '''Managing the thread for up- and downloading waveforms.
     '''
 
     active_load = None
     log_name = 'wavl'
+    busy = None
 
     def __init__(self):
         global _WAVL
@@ -146,7 +155,7 @@ class WaveformLoader(object):
         # up- and download set their own timeouts
         self.sok.read_timeout = TIME_BASE
         # locks the socket used for up and downloading
-        self.soklock = RLock()
+        self.soklock = Lock()
 
     is_connected = property(lambda self: self.sok.is_connected)
 
@@ -162,6 +171,7 @@ class WaveformLoader(object):
     def __del__(self):
         self.disconnect_exc()
 
+    @busy('uploading ramp')
     def upload(self, ch, maxlen=None):
         '''reads waveform from hardware, discarding the last point.
            since the server appends a copy of the first point to then end.
@@ -224,6 +234,7 @@ class WaveformLoader(object):
             msg = 'waveform point %d too small: %d < %d' % (idx, min_dat, PT_MIN)
             raise PS.PS_Exception(msg)
 
+    @busy('downloading ramp')
     def download(self, ch, wave, verify=1):
         '''Transmits waveform to control unit.
         '''
@@ -253,19 +264,10 @@ class WaveformLoader(object):
         self._duration = duration
         return ret
 
+    @busy
     def cancel(self):
         self.sok.write('!'+TERM)
         r = self.sok.readline().strip()
         self.log.debug('cancel: %s',r)
         return r
 
-    def reset_interlocks(self, restart):
-        if self.sok.is_connected: return
-        try:
-            self.reconnect()
-        except socket.error,err:
-            if err.errno==111:
-                restart()                
-            else:
-                raise
-        
