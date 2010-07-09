@@ -63,13 +63,18 @@ ALARM = Tg.DevState.ALARM
 MOVING = Tg.DevState.MOVING
 
 BEND_FAULT_STATE = frozenset( (0x0c, 0x0d) )
-BEND_ON_STATE = 0x0a  # power on
+BEND_ON_STATE = 0x0a  # running / power on
 BEND_OFF_STATE = 0x03 # IDLE (DC off)
 
 BEND_ON_T = {
     0x0A : 0.0,
-    0x03 : 70, # 65.0,
-    0x08 : 6.03
+    0x01 : 70,     # cab off (next 0x02??)
+    0x02 : 69.5,     # PRE_ON (starting cab...)  (next 0x03)
+    0x03 : 69,     # INRUSH (cab charg) (next 
+    0x04 : 1,      # DCON (next 0x05)
+    0x05 : 0.0,    # STANDBY (next 0x6)
+    0x08 : 6.03,   # 
+    0x10 : 2*70    # cab discharging... (next cabinet off)
 }
 
 
@@ -78,12 +83,18 @@ BEND_OFF_T = {
     0x0A : 22.0,
 }
 
-CAB_ON_STATES= (0x06, 9, 10)
+BEND_ON_PENDING = (0x04, 0x05, 0x06,0x07,0x08,0x09)
+BEND_OFF_PENDING = (0x0B, 0x0E, 0x0F)
+
+CAB_ON_STATE = 0x06 
+CAB_ON_PENDING = (2,3,4,5,8,16)
 CAB_OFF_STATE = 0x01
+CAB_OFF_PENDING = (1,7)
 CAB_FAULT_STATE = frozenset( (0x08,) )
 
 CAB_ON_T = {
     0x06 : 0.0,  # cabinet ready
+    0x03 : 124.24,
     0x01 : 124.42,
 }
 
@@ -448,18 +459,25 @@ class BrukerBend_PS(PS.PowerSupply):
         '''Switches one bending power supply on.
            Returns True once PS are on otherwise None or False.
         '''
-        c,b = self.mac_state(bend)
+        b,c = self.mac_state(bend)
 
         if c == CAB_OFF_STATE:
             bend.cab.On()
 
-        elif c in CAB_ON_STATES and b == BEND_OFF_STATE:
+	elif c in CAB_ON_PENDING:
+	    return False
+
+        elif c == CAB_ON_STATE and b == BEND_OFF_STATE:
             bend.On()
 
-        elif c in CAB_ON_STATES and b == BEND_ON_STATE:
+        elif c == CAB_ON_STATE and b in BEND_ON_PENDING:
+            return False
+
+        elif c == CAB_ON_STATES and b == BEND_ON_STATE:
             return True
 
         else:
+            self.log.error('not correctly switching on (mac_state = %s,%s)' % (b,c))
             return True
 
     def upswitch_off(self, bend):
@@ -467,15 +485,19 @@ class BrukerBend_PS(PS.PowerSupply):
            Returns True once PS are on otherwise None or False.
 
         '''
-        c,b = self.mac_state(bend)
+        b,c = self.mac_state(bend)
 
         if b == BEND_OFF_STATE:
             return True
+
+	elif b in BEND_OFF_PENDING:
+	    return False
 
         elif b == BEND_ON_STATE:
             bend.Off()
 
         else:
+            self.log.error('not correctly switching off (mac_state = %s,%s)' % (b,c))
             return True
 
 
@@ -485,8 +507,7 @@ class BrukerBend_PS(PS.PowerSupply):
         assert baval.quality == AQ_VALID
 # TODO: possibly the value could be non if qualiy INVALID
 #        assert cabaval.quality == AQ_VALID
-        c,b = cabaval.value, baval.value
-        return c,b
+        return baval.value, cabaval.value, 
 
     ### Attributes ###
     @PS.AttrExc
@@ -670,6 +691,13 @@ class BrukerBend_PS(PS.PowerSupply):
 
     def write_WaveName(self, wattr):
         self.write_attribute(wattr)
+
+    def read_TriggerMask(self, attr):
+        self.read_attribute(attr)
+
+    def write_TriggerMask(self, wattr):
+        self.write_attribute(wattr)
+
 
     def read_WaveId(self, attr):
         self.read_attribute(attr)

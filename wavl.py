@@ -1,6 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-# waveform_loader.py
+
+# wavl.py
 # TANGO Device Server (http://sourceforge.net/projects/tango-ds/)
 #
 # Copyright (c) 2009 by None
@@ -41,6 +42,7 @@ from types import NoneType
 import numpy as numpy
 from zlib import crc32
 import socket
+from wavl_hash import *
 
 WAVE_PORT = 3702
 TERM = '\r\n'
@@ -52,22 +54,11 @@ TIME_BASE = 0.45+1.0
 # value corresponding to nominal setting
 PT_MAX = 0x7ffff
 PT_MIN = -PT_MAX
-PT_NOMINAL =  0x3ffff
 
 READY = 'ready'
 
 _WAVL = None #< recent most created wave form loader
 
-def to_raw(I_nominal, waveform):
-    return tuple( int( (y*PT_NOMINAL)/I_nominal ) for y in waveform )
-
-def calc_hash(I, wav):
-    '''Calculates hash value for the specified waveform.
-        @param I nominal current of the power supply
-    '''
-    dat = (int(I),) + to_raw(I, wav)
-    ar = numpy.array(dat, numpy.int32)
-    return crc32(ar.data)
 
 def instance():
     global _WAVL
@@ -104,7 +95,6 @@ class Download(Load):
         impl.push_wave_down(self.wave)
         return rval
 
-
 class Upload(Load):
 
     BASE_MSG = 'upload'
@@ -120,6 +110,7 @@ class Upload(Load):
       rval = wavl.upload(self.port, maxlen=self.maxlen)
       impl.push_wave_up(self, rval)
       return rval
+
 
 
 class WaveformException(PS.PS_Exception):
@@ -154,8 +145,6 @@ class WaveformLoader(object):
         self.sok.reconnect_timeout = 1
         # up- and download set their own timeouts
         self.sok.read_timeout = TIME_BASE
-        # locks the socket used for up and downloading
-        self.soklock = Lock()
 
     is_connected = property(lambda self: self.sok.is_connected)
 
@@ -264,7 +253,7 @@ class WaveformLoader(object):
         self._duration = duration
         return ret
 
-    @busy
+    @busy('cancel')
     def cancel(self):
         self.sok.write('!'+TERM)
         r = self.sok.readline().strip()

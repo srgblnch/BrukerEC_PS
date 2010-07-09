@@ -62,6 +62,8 @@ class PSType(object):
         self.XI = kwargs.get('XI',0)
         self.states_off = kwargs.get('off', (3,) )
         self.states_on = kwargs.get('on', (10, ) )
+        self.states_switch_off = kwargs.get('swoff', (11, 14, 15) )
+        self.states_switch_on = kwargs.get('swon', (7,8,9 ) )
         self.states_standby = kwargs.get('standby', () )
         self.mask_cab = kwargs.get('mask_cab', 0)
         self.use_waveforms = True

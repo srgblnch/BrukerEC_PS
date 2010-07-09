@@ -3,6 +3,7 @@
 import ps_standard as PS
 import PyTango as Tg
 from time import sleep
+import traceback
 
 PSEUDO_ATTR = PS.PseudoAttr()
 
@@ -30,9 +31,12 @@ class Tuner(object):
                 raise PS.PS_Exception('could not write attribute RegulationTuneable because initialization not finished.')
 
         attr = Tg.Attr('RegulationTuneable', Tg.DevBoolean, Tg.READ_WRITE)
-        self.impl.add_attribute(attr,
-            r_meth=read_RegulationTuneable,
-            w_meth=write_RegulationTuneable)
+        try:
+            self.impl.add_attribute(attr,
+                r_meth=read_RegulationTuneable,
+                w_meth=write_RegulationTuneable)
+        except ValueError:
+            traceback.print_exc()
         aprop = Tg.UserDefaultAttrProp()
         aprop.set_description('whether modifying parameters related to regulation loop should be allowed or not. only set this to true when you really, really know what you are doing AND have a backup.')
         attr.set_default_properties(aprop)

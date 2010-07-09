@@ -136,7 +136,7 @@ class CabinetControl(object):
         self.log = logging.getLogger(self.__class__.__name__)
         self.active_port = None
         self.comm = FriendlySocket()
-        self.comm.read_timeout = 1.25
+        self.comm.read_timeout = 1.5
         # locks link to Ethernet bridge
         self.lck = RLock()
         self.log = logging.getLogger('cab')
@@ -387,7 +387,7 @@ class Big_Cabinet(Wave_Cabinet):
         (DS.MOVING, 'ACK_DM'),
         (DS.MOVING, 'ACK_QS'),
         (DS.MOVING, 'ACK_QM'),
-        (DS.MOVING, 'discharging cabinet capacitors...'),
+        (DS.MOVING, 'resetting...'),
         (DS.MOVING, '(unused)'),
  #       (DS.MOVING, 'ack. buck
     )
@@ -440,7 +440,7 @@ class Big_Cabinet(Wave_Cabinet):
     def get_stat(self):
         if self.state_id is None: return None
         if self.state_id > len(self.MACHINE_STAT):
-            s = [ DS.STANDBY, CAB_READY+' [%02d]' % self.state_id ]
+            s = [ DevState.STANDBY, CAB_READY+' [%02d]' % self.state_id ]
         else:
             s = list(self.MACHINE_STAT[self.state_id])
             s[1] = s[1].lower()
