@@ -26,7 +26,7 @@ def calc_hash(I_nominal, waveform):
     ar = numpy.array(dat, numpy.int32)
     return crc32(ar.data)
 
-def uhex32(value):
+def hex_u32(value):
     """Converts a hash code into string of unsigned hexadecimal digits.       
        -1 will be 2*31 result in fffffffff
     """
@@ -34,15 +34,25 @@ def uhex32(value):
         value += 2**32
     return "%x" % value
 
+def unhex_i32(string):
+  """Converts string of (unsigned) hexadecimal digits back into signed 32 bit integer
+  """
+  val = int(string,16)
+  if val >=2**31:
+      val -= 2**32
+  return val 
+
 def fingerprint(I_nominal, waveform):
     '''Returns fingerprint (str) that should be shown to the user.
        @param I_nominal nominal current of power supply
        @param waveform input waveform
     '''
     hash = calc_hash(I_nominal, waveform)
-    return uhex32(hash)
+    return hex_u32(hash)
 
 if __name__ == '__main__':
+    for x in (-1, -2**31, 0, 2**31-1, 3):
+	    print x, hex_u32(x), unhex_i32(hex_u32(x))
     import sys
     if len(sys.argv) < 3:
         print 'usage: ', sys.argv[0], ' I_nominal FILE_NAME'
