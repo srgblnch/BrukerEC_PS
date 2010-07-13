@@ -91,6 +91,7 @@ class Download(Load):
       return 'Download(port %d, %d pt)' % (self.port, len(self.data))
 
     def run(self, impl, wavl):
+        impl.ramp_off()
         rval = wavl.download(self.port, self.data)
         impl.push_wave_down(self.wave)
         return rval

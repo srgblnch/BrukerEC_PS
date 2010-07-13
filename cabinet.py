@@ -365,44 +365,8 @@ class Wave_Cabinet(STB_Cabinet):
         self.reset_interlocks_p(RELAY_PORT)
 
 class Big_Cabinet(Wave_Cabinet):
-
     POWER_ON_STATE = 0x06,
     POWER_OFF_STATE = 0x01,0x03
-
-    DS = DevState
-    MACHINE_STAT = (
-        (DS.OFF, 'CONFIG'),
-        (DS.OFF, 'cabinet off'),
-        (DS.INIT, 'starting cabinet'),
-        (DS.INIT, 'charging cabinet capacitors...'),
-        (DS.INIT, 'cabinet getting ready'),
-        (DS.STANDBY, 'STANDBY'),
-        (DS.STANDBY, CAB_READY),
-        (DS.MOVING, 'STOPPING'),
-        (DS.ALARM, 'fault / interlock'),
-        (DS.INIT, 'switching power supply (buck) on'),
-        (DS.INIT, 'switching power supply (4Q) on...'),
-        (DS.MOVING, 'switching power supply off...'),
-        (DS.MOVING, 'ACK_BS'),
-        (DS.MOVING, 'ACK_DM'),
-        (DS.MOVING, 'ACK_QS'),
-        (DS.MOVING, 'ACK_QM'),
-        (DS.MOVING, 'resetting...'),
-        (DS.MOVING, '(unused)'),
- #       (DS.MOVING, 'ack. buck
-    )
-
-
-# 0x0B : ACK_QS180_B1 (acknowledge Buck QS180-1)
-# 0x0C : ACK_QS180_Q1 (acknowledge 4Q QS180-1)
-# 0x0D : ACK_QS180_B2 (acknowledge Buck QS180-2)
-# 0x0E : ACK_QS180_Q2 (acknowledge 4Q QS180-2)
-# 0x0F : ACK_QS340_B (acknowledge Buck QS340)
-# 0x10 : ACK_QS340_Q (acknowledge 4Q QS340)
-# 0x11 : ACK_QC340_BS (acknowledge Buck QC340 Slave)
-# 0x12 : ACK_QC340_BM (acknowledge Buck QC340 Master)
-# 0x13 : ACK_QC340_QS (acknowledge 4Q QC340 Slave)
-# 0x14 : ACK_QC340_QM (acknowledge 4Q QC340 Master)
 
     errors = [
     'cabinet CAN communication',
@@ -455,6 +419,62 @@ class Big_Cabinet(Wave_Cabinet):
     def reset_interlocks(self):
         self.reset_interlocks_p(RELAY_PORT)
 
+class Bend_Cabinet(Big_Cabinet):
+
+    DS = DevState
+    MACHINE_STAT = (
+        (DS.OFF, 'CONFIG'),
+        (DS.OFF, 'cabinet off'),
+        (DS.INIT, 'starting cabinet'),
+        (DS.INIT, 'charging cabinet capacitors...'),
+        (DS.INIT, 'cabinet getting ready'),
+        (DS.STANDBY, 'STANDBY'),
+        (DS.STANDBY, CAB_READY),
+        (DS.MOVING, 'STOPPING'),
+        (DS.ALARM, 'interlock'),
+        (DS.INIT, 'switching power supply (buck) on'),
+        (DS.INIT, 'switching power supply (4q) on...'),
+        (DS.MOVING, 'switching power supply off...'),
+        (DS.MOVING, 'ack. buck slave'),
+        (DS.MOVING, 'ack. buck master'),
+        (DS.MOVING, 'ack. quad slave'),
+        (DS.MOVING, 'ack. quad master'),
+        (DS.MOVING, 'resetting cabinet...'),
+    )
+
+
+class Quad_Cabinet(Big_Cabinet):
+
+    DS = DevState
+    MACHINE_STAT = list(Bend_Cabinet.MACHINE_STAT[0:9]) + [
+	(DS.MOVING, 'pre idle'),
+        (DS.UNKNOWN, '(unused)'),
+        (DS.INIT, 'ack. QV01 buck'),
+        (DS.INIT, 'ack. QV01 4q'),
+        (DS.INIT, 'ack. QV02 buck'),
+        (DS.INIT, 'ack. QV02 4q'),
+        (DS.INIT, 'ack. QH01 buck'),
+        (DS.INIT, 'ack. QH01 4q'),
+        (DS.INIT, 'ack. QH02 buck slave'),
+        (DS.INIT, 'ack. QH02 buck master'),
+        (DS.INIT, 'ack. QH02 4Q slave'),
+        (DS.INIT, 'ack. QH02 4Q master'),
+        (DS.INIT, 'start QV01 buck'),
+        (DS.INIT, 'start QV01 4q'),
+        (DS.MOVING, 'stop QV01'),
+        (DS.INIT, 'start QV02 buck'),
+        (DS.INIT, 'start QV02 4q'),
+        (DS.MOVING, 'stop QV02'),
+        (DS.INIT, 'start QH01 buck'),
+        (DS.INIT, 'start QH01 4q'),
+        (DS.MOVING, 'stop QH01'),
+        (DS.INIT, 'start QH02 buck master'),
+        (DS.INIT, 'start QH02 buck slave'),
+        (DS.INIT, 'start QH02 4q'),
+        (DS.MOVING, 'stop QH02'),
+    ]
+
+
 CAN_BUS_TIMEOUT_CODE = 0x800000
 class CanBusTimeout(PS.PS_Exception):
     '''Exception thrown when CAN bus timesout
@@ -494,8 +514,8 @@ def check(port, response, hint=''):
 CAB_CT = {
     1 : ( Wave_Cabinet, 'corrector' ),
     2 : ( DC_Cabinet, 'transferline'),
-    3 : ( Big_Cabinet, 'quadrupole' ),
+    3 : ( Quad_Cabinet, 'quadrupole' ),
     7 : ( Wave_Cabinet, 'sextupole' ),
-    8 : ( Big_Cabinet, 'dipole' )
+    8 : ( Bend_Cabinet, 'dipole' )
 }
 

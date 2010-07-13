@@ -26,7 +26,7 @@ def calc_hash(I_nominal, waveform):
     ar = numpy.array(dat, numpy.int32)
     return crc32(ar.data)
 
-def hex_u32(value):
+def uhex32(value):
     """Converts a hash code into string of unsigned hexadecimal digits.       
        -1 will be 2*31 result in fffffffff
     """
@@ -40,16 +40,7 @@ def fingerprint(I_nominal, waveform):
        @param waveform input waveform
     '''
     hash = calc_hash(I_nominal, waveform)
-    return hex_u32(hash)
-
-def unhex_i32(string):
-  """Converts string of (unsigned) hexadecimal digits back into signed 32 bit integer.
-     It is the inverse operation of hex_u32.
-  """
-  val = int(string,16)
-  if val >=2**31:
-      val -= 2**32
-  return val 
+    return uhex32(hash)
 
 if __name__ == '__main__':
     import sys

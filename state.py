@@ -82,7 +82,7 @@ class PSType(object):
 	    return PS.VDQ(adv, q=PS.AQ_VALID)
 
 
-class PSType_4Q(PSType):
+class PSType_SmallQuad(PSType):
 
       has_trigger_mask = True
 
@@ -106,9 +106,7 @@ class PSType_4Q(PSType):
         adv = cmd_adv(master)
         return PS.VDQ(adv, q=PS.AQ_VALID)
 
-class PSType_4QC(PSType_4Q):
-
-      has_trigger_mask = True
+class PSType_Big(PSType_SmallQuad):
 
       def query_Voltage(self, impl):
         cmd = impl.cab.command
@@ -275,9 +273,9 @@ CABINET_XI=xrange(12, 16)
 # quadrupole types
 PSTYPE_CODE_QUAD = 3
 # quad with 2 sub-modules (QC340)
-PSTYPE_SMALL_QUAD = PSType_4Q('small quadrupole', PORT_Q, PORT_BUCK)
+PSTYPE_SMALL_QUAD = PSType_SmallQuad('small quadrupole', PORT_Q, PORT_BUCK)
 # quad with 4 sub-modules (QC340)
-PSTYPE_BIG_QUAD = PSType_4QC('big quadrupole', *PORTS_BIG)
+PSTYPE_BIG_QUAD = PSType_Big('big quadrupole', *PORTS_BIG)
 
 # sextupole type
 PSTYPE_SEX = PSType('sextupole', PORT_C, XI=xrange(12, 16) , mask_cab=0x08)
@@ -293,7 +291,7 @@ REG2PSTYPE = {
     5 : None, # quadrupole relay board
     6 : None, #< buck for ???,
     7 : PSTYPE_SEX,
-    8 : PSType_4QC('dipole', *PORTS_BIG, Isafe=470, XI=xrange(12,16), states_on=(4,), states_off=(1,)), # aka
+    8 : PSType_Big('dipole', *PORTS_BIG, Isafe=470, XI=xrange(12,16), states_on=(4,), states_off=(1,)), # aka
     9 :  None, #< dipole relay board
 }
 
