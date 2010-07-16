@@ -203,11 +203,8 @@ class BrukerEC_PS(PS.PowerSupply):
             WaveDuration = VDQ(0.0),
             WaveStatus = VDQ(wavl.READY, q=AQ_VALID),
             WaveId = VDQ(0, q=AQ_INVALID),
-            WaveName = VDQ(self.WaveName, q=AQ_VALID)           
+            WaveName = VDQ(self.WaveName, q=AQ_VALID)
         )
-        # at least until move_fin the state will be MOVING
-        self.move_fin = 0
-  
         self.cab = cabinet.instance()
         self.wavl = wavl.instance()
 
@@ -300,19 +297,18 @@ class BrukerEC_PS(PS.PowerSupply):
         if vdq.quality == AQ_INVALID:
             if dflt is None:
                 raise AttributeInvalid(aname)
-            else:
+        else:
                 return dflt
         return vdq.value
 
     def pstype(self):
         """Returns PSType object for power supply.
         """
+        if self._pstype: return self._pstype
+
         # By executing the method it is also guranteed that certain
         # tasks (detecing CurrentNominal) have succeeded
-        if self._pstype: return
-      
         type_code = self.query('Version').value[0]
-
         if type_code==state.PSTYPE_CODE_QUAD:
             brk_config2 = self.ObjInt(state.COBJ_BRK_CONFIG2)
             if brk_config2==state.BRKconfig2_MASTER:
@@ -324,18 +320,23 @@ class BrukerEC_PS(PS.PowerSupply):
                 raise PS.PS_Exception(msg)
         else:
             pst = deepcopy(state.REG2PSTYPE[type_code])
+
         if pst is None:
             msg = 'failed to detect suitable PS, port %d has type code %d' \
                 % (self.Port, type_code)
             raise PS.PS_Exception(msg)
 
+        # updates messages related to external interlocks
+        xi_msg = [ getattr(self,'Interlock%d' % d) for d in range(1,5) ]
+        pst.update_xi(xi_msg)
+
         obj_cmd = 'OBJ='+hex(state.COBJ_MAIN_IREF_SCALED)
         rs = self.cmd_seq(obj_cmd,'ymax/','xmax/')
         ymax = float(rs[1])
         if rs[2].startswith('0x'):
-            xmax = int(rs[2],16)
+          xmax = int(rs[2],16)
         else:
-            xmax = float(rs[2])
+          xmax = float(rs[2])
 
         # nominal current is fixed to be the following...
         # 32 bit signed integer values
@@ -345,10 +346,6 @@ class BrukerEC_PS(PS.PowerSupply):
         tri = VDQ(round(XNOMINAL/xmax * ymax),q=AQ_VALID)
         self.cache['CurrentNominal'] = tri
 
-        if pst.XI:
-            err = pst.ports[0].errors
-            name = self.get_name()
-            customize_interlock_msg(err, name, pst.XI)
         self.get_nominal_y()
         # using self.use_waveform is valid here because the
         # cabinet type is detected when that cabinet device connects
@@ -361,27 +358,29 @@ class BrukerEC_PS(PS.PowerSupply):
         self._pstype = pst
         self.cab.init_counter += 1
 
-        # sets last written value for writeable attributes to their 
-        # current settings
+        # sets last written value for writeable attributes to their
+      # current setting
         try:
             self.UploadWaveform()
 
             cur = float(self.cmd_seq('CUR/')[0])
             self._attr('CurrentSetpoint').set_write_value(cur)
 
-            wgen = self.update_attr('WaveGeneration')
-            self._attr('WaveGeneration').set_write_value(wgen)
-
-            wgen = self.update_attr('WaveInterpolation')
-            self._attr('WaveInterpolation').set_write_value(wgen)
-
-            wof = float(self.cmd_seq('WOF/')[0])
-            self._attr('WaveOffset').set_write_value(wof)
-
-            wgen = self.update_attr('CurrentRamp')
-            self._attr('CurrentRamp').set_write_value(wgen)
+            ramp = self.update_attr('CurrentRamp')
+            self._attr('CurrentRamp').set_write_value(ramp)
 
             self.update_attr('RegulationFrequency')
+
+            if self.cab.use_waveforms:
+                  wgen = self.update_attr('WaveGeneration')
+                  self._attr('WaveGeneration').set_write_value(wgen)
+
+                  wint = self.update_attr('WaveInterpolation')
+                  self._attr('WaveInterpolation').set_write_value(wint)
+
+                  wof = self.update_attr('WaveOffset')
+                  self._attr('WaveOffset').set_write_value(wof)
+
 
         except Exception, exc:
             self.log.exception(str(exc))
@@ -453,7 +452,7 @@ class BrukerEC_PS(PS.PowerSupply):
             wavehash = wavl.calc_hash(Inominal, waveform)
             self.push_vdq('WaveId', wavehash, d=t0, q=AQ_VALID)
             msg = load.BASE_MSG+' finished %.2fs' % diff_t
-            self.push_vdq('WaveStatus', msg, q=AQ_VALID)            
+            self.push_vdq('WaveStatus', msg, q=AQ_VALID)
 
         except PS.PS_Exception, exc:
             msg = load.BASE_MSG+' error: '+str(exc)
@@ -461,7 +460,7 @@ class BrukerEC_PS(PS.PowerSupply):
             self.push_vdq('WaveStatus', msg, q=AQ_ALARM)
             traceback.print_exc()
 
-        except socket.error, err:       
+        except socket.error, err:
             err_msg = str(err)
             self._alarm('waveforms %s' % err_msg)
             ws = load.BASE_MSG+' failed: '+err_msg
@@ -480,12 +479,14 @@ class BrukerEC_PS(PS.PowerSupply):
         '''Updates the state of device.
         '''
         try:
+            self._up_start_t = time()
+
 
             if not self.cab.is_connected:
                 if self.cab.comm._exc_msg:
                     self._alarm(self.cab.comm._exc_msg)
                 else:
-                    self._alarm('no connection to control unit') 
+                    self._alarm('no connection to control unit')
                 return
 
             # skips update when loading waveforms, instead of hanging
@@ -508,9 +509,9 @@ class BrukerEC_PS(PS.PowerSupply):
             # local state, interlock
             def up(aname, phase=0, dflt=None):
                 if self.update_cycle % STEP == phase:
-                  return self.update_attr(aname)
+                    return self.update_attr(aname)
                 else:
-                  return self.value(aname, dflt=dflt)
+                    return self.value(aname, dflt=dflt)
 
             # checks CAN bus communication
             STA = up('ErrorCode',0)
@@ -528,17 +529,19 @@ class BrukerEC_PS(PS.PowerSupply):
             WMO = up('WaveGeneration',2, dflt=False)
             Iref = up('CurrentSetpoint',3)
 
+            # needed to have responsive bend interface
+            if self.use_waveforms:
+                up('WaveOffset', 4)
+
             # updates Voltage only in DC mode
             ps_on = self.is_power_on()
+            # only needed for historic
             if WMO:
-                ramp_mode = 'ramp mode'
                 moving = False
             else:
                 U = up('Voltage',4, dflt=0.0)
-                ramp_mode = ''
                 Inominal = self.value('CurrentNominal')
-                rel_err = PU.relative_error(Iref, Imeas, Inominal)
-                moving = ps_on and (rel_err > self.RegulationPrecision)
+                moving = ps_on and abs(Iref-Imeas) > self.RegulationPrecision
 
             self.alarms += PU.bit_filter_msg(STA, t.ports[0].errors)
             self.alarms += self.cab.get_alarms(t.mask_cab)
@@ -570,12 +573,12 @@ class BrukerEC_PS(PS.PowerSupply):
             elif interlocks:
                 self.STAT.ALARMS(interlocks)
 
-            elif ps_on:
-                self.STAT.ON(ramp_mode)
-
             # check for moving state
-            elif moving or self.move_fin > time():
+            elif moving:
                 self.STAT.CURRENT_ADJUST()
+
+            elif ps_on:
+                self.STAT.ON()
 
             elif STC in t.states_switch_on:
                 self.STAT.SWITCHING_ON()
@@ -587,26 +590,25 @@ class BrukerEC_PS(PS.PowerSupply):
             # on/off by the cabinet relay board
             elif CAB_MC in self.CabMcOn:
                 step = CAB_MC-self.CabMcOn[0]
-                self.STAT.SWITCHING_ON("%d" % step, ramp_mode)
+                self.STAT.SWITCHING_ON("%d" % step)
 
             elif CAB_MC in self.CabMcOff:
                 step = CAB_MC-self.CabMcOff[0]
-                self.STAT.SWITCHING_OFF("%d" % step, ramp_mode)
+                self.STAT.SWITCHING_OFF("%d" % step)
 
             elif CAB_STAT:
-                te,tus = CAB_STAT[0:2]                
+                te,tus = CAB_STAT[0:2]
                 if te==Tg.DevState.STANDBY:
-                     self.STAT.OFF(ramp_mode)
+                     self.STAT.OFF()
 
                 elif te!=Tg.DevState.OFF:
-                     extra = tus + (', '+ramp_mode if ramp_mode else '')
-                     self.STAT.OFF(extra=extra)
+                     self.STAT.OFF(extra=tus)
 
                 else:
-                     self.STAT.OFF(ramp_mode, what='cabinet')
+                     self.STAT.OFF(what='cabinet')
 
             else:
-                self.STAT.OFF(extra=ramp_mode)
+                self.STAT.OFF()
 
         except PS.PS_Exception, exc:
             self._alarm(str(exc))
@@ -644,6 +646,7 @@ class BrukerEC_PS(PS.PowerSupply):
 
     @PS.CommandExc
     def UploadWaveform(self, maxlen=None):
+        if not self.cab.use_waveforms: return
         self._check_use_waveforms()
         self.log.debug('UploadWaveform!')
         if 'Waveform' in self.cache:
@@ -693,7 +696,7 @@ class BrukerEC_PS(PS.PowerSupply):
                 return float(rs[1])
 
 
-    ## is_xyz functions ##    
+    ## is_xyz functions ##
     def is_dc_mode(self):
         return not self.value('WaveGeneration', dflt=False)
 
@@ -701,8 +704,9 @@ class BrukerEC_PS(PS.PowerSupply):
         return self.value('MachineState') in self.pstype().states_on
 
     def is_ramping(self):
-        return self.value('WaveGeneration', dflt=False) and self.is_power_on()  and (
-           not self.pstype().has_trigger_mask or self.value('TriggerMask')!=0)
+        return self.value('WaveGeneration', dflt=False) and self.is_power_on() \
+            and (not self.pstype().has_trigger_mask or \
+                 self.value('TriggerMask')!=0)
 
     def is_WaveGeneration_allowed(self, write):
         return not write or not self.is_power_on()
@@ -718,8 +722,8 @@ class BrukerEC_PS(PS.PowerSupply):
                 vdq.quality = AQ_CHANGING
         except Exception:
             self.log.error('query_Current', exc_info=1)
-        return vdq        
-   
+        return vdq
+
     @PS.AttrExc
     def read_Current(self, attr):
         self.vdq('Current').set_attr(attr)
@@ -785,7 +789,7 @@ class BrukerEC_PS(PS.PowerSupply):
     def read_WaveY(self,attr):
         self.vdq_set(attr, query='none', dflt=[])
 
-    # 
+    #
     def _write_wave_z(self,attr):
         aname = attr.get_name()
         data = attr.get_write_value()
@@ -805,14 +809,14 @@ class BrukerEC_PS(PS.PowerSupply):
             raise WaveDisabled(msg)
 
     ### Wave Attributes ###
-    @PS.AttrExc 
+    @PS.AttrExc
     def write_WaveGeneration(self, attr):
         self.log.debug('writing wave generation')
         self._check_use_waveforms('WaveGeneration')
         val = attr.get_write_value()
         self.cmd('WMO=%s' % int(val))
-        self.update_attr('WaveGeneration')            
-        self.update_attr('Voltage')            
+        self.update_attr('WaveGeneration')
+        self.update_attr('Voltage')
 
     @PS.AttrExc
     def write_WaveX(self,attr):
@@ -989,11 +993,9 @@ class BrukerEC_PS(PS.PowerSupply):
         Iread = self.value('Current', query='force')
         t0 = time()
         vdq = self.cache['CurrentSetpoint'] = VDQ(Iset, t0, AQ_CHANGING)
-        dt = max( abs(Iread-Iset) / slope, MIN_MOVING_TIME)
         self.write_ec_attribute(attr, 'CUR', repr)
         vdq.set_attr(attr)
         if self.get_state() in (Tg.DevState.ON, Tg.DevState.MOVING):
-            self.move_fin = t0 + dt
             self.STAT.CURRENT_ADJUST()
 
     def query_RegulationFrequency(self):
@@ -1096,11 +1098,11 @@ class BrukerEC_PS(PS.PowerSupply):
 
 class BrukerEC_PS_Class(PS.PowerSupply_Class):
 
-    class_property_list = PS.gen_property_list()
+    class_property_list = PS.gen_property_list(XI=4)
 
     class_property_list['RegulationPrecision'] = [ DevDouble,
         'for which current delta we consider the regulation process to be finished',
-        5e-4 # 5 ppm
+        5e-3 # 5 ppm
     ]
 
     device_property_list = PS.gen_property_list(cpl=class_property_list)
@@ -1343,7 +1345,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
     @PS.CommandExc
     def ResetInterlocks(self):
         PS.PowerSupply.ResetInterlocks(self)
-        self.cab.command_seq(self.Port, 'RST=0') 
+        self.cab.command_seq(self.Port, 'RST=0')
         self.cab.update_state()
 
     def restart_bsw_tcp(self):
@@ -1360,7 +1362,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
     @PS.CommandExc
     def UpdateState(self):
         cab = self.cab
-        try: 
+        try:
             cab.reconnect()
             code = st = cab.update_state()
             self.push_change_event('MachineState', cab.state_id)
@@ -1372,7 +1374,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
                 self.STAT.ALARM(self.alarms[0])
             else:
                 self.STAT.set_stat2(*cab.stat)
-            self.wavl.reconnect() 
+            self.wavl.reconnect()
 
         except socket.timeout:
             self.STAT.ALARM('communication timeout')
@@ -1395,7 +1397,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
 
         if cab.use_waveforms:
             try:
-                self.wavl.reconnect()                  
+                self.wavl.reconnect()
             except socket.error, err:
                 self.STAT.FAULT(Str(err))
                 return
@@ -1408,7 +1410,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         if self.Port=='stb':
             port = 0
         else:
-            port = self.Port
+            port = int(self.Port)
 
         cmd_prt = 'PRT=%d' % port #< command for going back to current port
         cl = command_list[:]
