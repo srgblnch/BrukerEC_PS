@@ -16,7 +16,6 @@ import PyTango as Tg
 import traceback
 
 
-
 PSSL = PS.StateLogic
 
 class Port(object):
@@ -34,9 +33,9 @@ class Port(object):
 class RP(object):
       """Description of 1 RegulationParameter."""
       def __init__(self, cobj, index=0, w=1):
-	  self.cobj = cobj
-	  self.index = index
-	  self.rw = Tg.READ_WRITE if w else Tg.READ
+          self.cobj = cobj
+          self.index = index
+          self.rw = Tg.READ_WRITE if w else Tg.READ
 
 
 class PSType(object):
@@ -59,14 +58,22 @@ class PSType(object):
     def __init__(self, name, *ports, **kwargs):
         self.name = name
         self.ports = ports
-        self.XI = kwargs.get('XI',0)
-        self.states_off = kwargs.get('off', (3,) )
-        self.states_on = kwargs.get('on', (10, ) )
+        self.XI = kwargs.get('XI', ())
+        # if not on well, it is off
+        self.states_on = (10, )
         self.states_switch_off = kwargs.get('swoff', (11, 14, 15) )
         self.states_switch_on = kwargs.get('swon', (7,8,9 ) )
         self.states_standby = kwargs.get('standby', () )
         self.mask_cab = kwargs.get('mask_cab', 0)
         self.use_waveforms = True
+
+    def update_xi(self, msg_list):
+        '''Updates the message displayed for the external interlocks of this
+           power supply.
+        '''
+        p0 = self.ports[0]
+        for idx,msg in zip(self.XI,msg_list):
+            p0.errors[idx] = msg      
 
     def __str__(self):
         return self.name + " PS "+ str(self.ports)
@@ -75,14 +82,19 @@ class PSType(object):
         return self.__class__.__name__ + repr( (self.name, self.ports) )
 
     def query_Voltage(self, impl):
-	    cmd = impl.cab.command
-	    master = impl.Port
-	    cmd_adv = lambda p: float(cmd(p, 'ADV/'))
-	    adv = cmd_adv(master)
-	    return PS.VDQ(adv, q=PS.AQ_VALID)
+        cmd = impl.cab.command
+        master = impl.Port
+        cmd_adv = lambda p: float(cmd(p, 'ADV/'))
+        adv = cmd_adv(master)
+        return PS.VDQ(adv, q=PS.AQ_VALID)
 
 
 class PSType_SmallQuad(PSType):
+
+      def __init__(self, name, *ports, **kwargs):
+          PSType.__init__(self, name, *ports, **kwargs)
+          if not 'XI' in kwargs:
+              self.XI = range(12,16)
 
       has_trigger_mask = True
 
@@ -115,173 +127,157 @@ class PSType_Big(PSType_SmallQuad):
         adv_slave = cmd_adv(impl.Port+2)
         return PS.VDQ(adv_master+adv_slave, q=PS.AQ_VALID)
 
+# common error messages
+EBIT = lambda x: 'unused bit %d' % x
+E_EARTH = 'earth leakage'
+E_EEPROM = 'EEPROM error'
+E_BIG_LOAD = 'load over-current, voltage or RMS current'
+E_LOAD = 'load over-current or over-voltage'
+E_ADC = 'ADC voltage or watchdog'
+E_DCCT = 'DCCT fault'
+E_BUCK_TEMP = 'buck overtemperature'
+E_EXTERN = [ 'extern 1', 'extern 2', 'extern 3', 'extern 4' ]
+E_CAPV = 'capacitor voltage unbalanced'
+E_IGBT = 'IGBT fault'
+
 # the integers are used as symbolic constants
+# errors for t1 (correctors and sextupoles)
 ERRORS_CORR = [
     ## Error byte, LSB, 0x00 ... 0x08
-    'earth leak',
-    'EPROM / DC Filter',
-    'load overcurrent / overvoltage',
-    'ADC voltage / watchdog',
+    E_EARTH,
+    E_EEPROM+' or DC filter overvoltage',
+    E_LOAD,
+    E_ADC,
     'DC on fault',
-    'communication',
-    'DCCT',
-    'IGBT',
+    EBIT(5),
+    E_DCCT,
+    E_IGBT,
 
     ## Error byte, MSB, 0x00 ... 0x08
     'power stage overtemperature',
     'switcher overtemperature',
     'rectifier overtemperature',
-    'transformer overtemperature',
-    'extern 1',
-    'extern 2',
-    'extern 3',
-    'extern 4'
-]
+    'transformer overtemperature'
+] + E_EXTERN 
+assert(len(ERRORS_CORR)==16)
 
-ERRORS_4QM = [
-    ## Error byte, LSB, 0x00 ... 0x80
-    'earth leak',
-    'EPROM',
-    'current or voltage maximum exceeded',
-    'ADC Voltage / Watchdog',
-    'DCCT Fault',
-    'IGBT 2Q2 (2)',
-    'temperature B',
-    'oscillation',
-
-    ## Error byte, MSB, 0x0100 ... 0x8000
-    'unbalance C',
-    'IGBT 2Q1 (1)',
-    'IGBT 2Q2 (1)',
-    'IGBT 2Q1 (2)',
-    'unbalance 2Q2',
-    'temperature L2',
-    'unbalance 2Q1',
-    'temperature L1'
-]
-
+# errors for t3 (quad 4Q)
 ERRORS_QUAD = [
     ## Error byte, LSB, 0x00 ... 0x80
-    'earth leak',
-    'EPROM',
-    'current or voltage maximum exceeded',
-    'ADC Voltage / Watchdog',
-    'DCCT Fault',
-    'IGBT 2Q2 (2)',
-    'temperature B',
+    E_EARTH,
+    E_EEPROM,
+    E_BIG_LOAD,
+    E_ADC,
+    E_DCCT,
+    E_CAPV,
+    'switcher overtemperature',
+    '4Q IGBT fault (bit 7)',
+
+    ## Error byte, MSB, 0x0100 ... 0x8000
+    'unbalance',
+    '4Q IGBT fault (bit 9)',    
+    E_BUCK_TEMP,
+    EBIT(11),
+] + E_EXTERN
+assert(len(ERRORS_QUAD)==16)
+
+# errors for t8 (bending 4Q)
+ERRORS_BEND = [
+    ## Error byte, LSB, 0x00 ... 0x80
+    E_EARTH,
+    E_EEPROM,
+    E_BIG_LOAD,
+    E_ADC,
+    E_DCCT,
+    'IGBT 2Q2 (2) fault',
+    E_BUCK_TEMP,
     'oscillation',
 
     ## Error byte, MSB, 0x0100 ... 0x8000
-    'unbalance C',
-    'IGBT 2Q1 (1)',
-    'IGBT 2Q2 (1)',
-    'IGBT 2Q1 (2)',
-    'ext.1 / unbalance 2Q2',
-    'ext.2 / temperature L2',
-    'ext.3 / unbalance 2Q1',
-    'ext.4 / temperature L1'
+    E_CAPV,
+    'IGBT 2Q1 (2) fault',
+    'IGBT 2Q2 (1) fault',
+    'IGBT 2Q1 (2) fault',
+    'unbalance 2Q2 (2)',
+    'self 2 overtemperature',
+    'unbalance 2Q1 (1)',
+    'self 1 overtemperature',
 ]
 
-EBIT = 'unspecified error (bit %d)'
-ERRORS_4QS = copy.copy(ERRORS_4QM)
-ERRORS_4QS[0] = EBIT % 0
-ERRORS_4QS[4] = EBIT % 4
-ERRORS_4QS[7] = EBIT % 7
-ERRORS_4QS[9] = 'IGBT 2Q1 (2)'
-ERRORS_4QS[10] = 'IGBT 2Q2 (1)'
-ERRORS_4QS[11] = 'IGBT 2Q1 (1)'
-ERRORS_4QS[13] = 'temperature L4'
-ERRORS_4QS[15] = 'temperature L3'
-
+# errors for t4 (buck)
 ERRORS_BUCK = [
     'buck over voltage',
     'EEPROM error',
     'buck over current',
     'ADC U/watchdog',
     'rectifier over voltage',
-    EBIT % 5,
-    EBIT % 6,
-    EBIT % 7,
+    EBIT(5),
+    EBIT(6),
+    EBIT(7),
 
 ## MSB
-    EBIT % 8,
-    EBIT % 9,
-    EBIT % 10,
-    'IGBT fault',
-    EBIT % 12,
-    EBIT % 13,
-    EBIT % 14,
-    EBIT % 15,
+    EBIT(8),
+    EBIT(9),
+    EBIT(10),
+    E_IGBT,
+    EBIT(12),
+    EBIT(13),
+    EBIT(14),
+    EBIT(15),
 ]
+assert(len(ERRORS_BUCK)==16)
 
 # global errors
-
-
 ERRORS_CABINET = [
     'cabinet CAN communication',
     'cabinet EPROM',
-    EBIT % 2,
+ERRORS_CABINET = [
+    'cabinet CAN communication',
+    'cabinet EPROM',
+    EBIT(2),
     'cabinet watch dog',
     'communication cabinet',
     'phase',
     'door open',
     'water',
 # MSB
-    EBIT % 8,
+    EBIT(8),
     'cabinet fuse',
     'emergency / PSS',
     'temperature cabinet'
-    'extern 1',
-    'extern 2',
-    'extern 3',
-    'extern 4'
-]
-
-MACHINE_STATUS = (
-    'GSM_CONFIG',
-    'GSM_CONFIG_1',
-    'SYNC',
-    'IDLE (ready state)',
-    'ADC_CAL',
-    'INRUSH',
-    'DC ON',
-    'STANDBY',
-    'PULSE ON',
-    'REG ON',
-    'RUNNING (DC On state)',
-    'STOPPING',
-    'FAULT',
-    'FAULT_ZC',
-    'unknown (29)'
-)
-
+] + E_EXTERN
+assert(len(ERRORS_CABINET)==16)
 
 PORT_RELAY = Port('Relay', ERRORS_CABINET)
 PORT_RELAY.port = 19
-PORT_Q = Port('4Q', ERRORS_QUAD)
-PORT_QM = Port('4Q master', ERRORS_4QM)
+PORT_Q = Port('quad 4Q', ERRORS_QUAD)
+PORT_BM = Port('bend 4Q master', ERRORS_BEND)
+PORT_BS = Port('bend 4Q slave', ERRORS_BEND)
 PORT_BUCK = Port('buck', ERRORS_BUCK)
 PORT_BUCK1 = Port('buck 1', ERRORS_BUCK)
 PORT_BUCK2 = Port('buck 2', ERRORS_BUCK)
-PORT_QS = Port('4Q slave', ERRORS_4QS)
 PORT_C = Port('corrector', ERRORS_CORR)
 PORT_S = Port('sextupole', ERRORS_CORR)
-
-PORTS_BIG = PORT_QM, PORT_BUCK1, PORT_QS, PORT_BUCK2
 CABINET_XI=xrange(12, 16)
 
 # quadrupole types
 PSTYPE_CODE_QUAD = 3
-# quad with 2 sub-modules (QC340)
-PSTYPE_SMALL_QUAD = PSType_SmallQuad('small quadrupole', PORT_Q, PORT_BUCK)
-# quad with 4 sub-modules (QC340)
-PSTYPE_BIG_QUAD = PSType_Big('big quadrupole', *PORTS_BIG)
+
+# defining PsType objects
+# quad with 2 sub-modules, ( QS120/180, QC320/340 )
+PSTYPE_SMALL_QUAD = PSType_SmallQuad('small quadrupole', 
+  PORT_Q, PORT_BUCK
+)
+# quad with 4 sub-modules ( QC340 )
+PSTYPE_BIG_QUAD = PSType_Big('big quadrupole', 
+  PORT_Q, PORT_BUCK1, PORT_Q, PORT_BUCK2
+)
+
+PSTYPE_BEND = PSType_Big('bending', 
+  PORT_BM, PORT_BUCK1, PORT_BS, PORT_BUCK2, Isafe=470)
 
 # sextupole type
 PSTYPE_SEX = PSType('sextupole', PORT_C, XI=xrange(12, 16) , mask_cab=0x08)
-PSTYPE_SEX.REG_PARAM = copy.copy(PSType.REG_PARAM)
-del PSTYPE_SEX.REG_PARAM['BuckV']
-
 # maps software types to PSTypes
 REG2PSTYPE = {
     1 : PSType('corrector', PORT_C, XI=xrange(12, 16), mask_cab=0x18), # correctors and quadrupoles?
@@ -291,7 +287,7 @@ REG2PSTYPE = {
     5 : None, # quadrupole relay board
     6 : None, #< buck for ???,
     7 : PSTYPE_SEX,
-    8 : PSType_Big('dipole', *PORTS_BIG, Isafe=470, XI=xrange(12,16), states_on=(4,), states_off=(1,)), # aka
+    8 : PSTYPE_BEND,
     9 :  None, #< dipole relay board
 }
 

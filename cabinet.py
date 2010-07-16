@@ -116,6 +116,7 @@ class UpdateThread(Thread):
 class CabinetControl(object):
     '''Cabinet wide-status and control link.
     '''
+    state_id = 0
     host = property(lambda inst: inst.comm.host)
     port = None #< port of the cabinet controller / relay board (used for resetting interlocks)
     type_hint = 0
@@ -127,7 +128,6 @@ class CabinetControl(object):
     # and the functionality is provided by the relay board
     cab_port = None
     errors = None
-    state_id = None
     # when CAN bus hangs this flag will be true
     # reset it by explicit assignment or by calling update_state
     can_hang = False
@@ -136,7 +136,7 @@ class CabinetControl(object):
         self.log = logging.getLogger(self.__class__.__name__)
         self.active_port = None
         self.comm = FriendlySocket()
-        self.comm.read_timeout = 1.5
+        self.comm.read_timeout = 3.0 # doubled from 1.5
         # locks link to Ethernet bridge
         self.lck = RLock()
         self.log = logging.getLogger('cab')
@@ -149,7 +149,7 @@ class CabinetControl(object):
         self.desc = 'generic'
         self.stat = None
         self.init_counter = 0
-  
+
     is_connected = property(lambda self: self.comm.is_connected)
 
 
@@ -186,7 +186,7 @@ class CabinetControl(object):
         self.comm.reconnect()
 
         # Determines the type of the cabinet used.
-        # NOTE: from typical OO style self-modifying code such as changing 
+        # NOTE: from typical OO style self-modifying code such as changing
         #       the type of an object at run-time, could lead to behavior
         #       that is difficult to predict. Since the new behavior
         #       is given by a sub-class and is done only once, I hope the
@@ -220,7 +220,7 @@ class CabinetControl(object):
 
     def reset_interlocks_p(self, port):
         if self.is_connected:
-            self.command_seq(port, 'RST=0') 
+            self.command_seq(port, 'RST=0')
 
     def command_seq(self, port, *cmd_list, **kwargs):
         """Executes a series of commands for a specific channel,
@@ -230,7 +230,7 @@ class CabinetControl(object):
         with self.lck:
             force = kwargs.get('force', False)
             self.switch_port(port)
-            r = []            
+            r = []
             for cmd in cmd_list:
                 r.append(self._command(cmd, force=force))
             return r
@@ -265,7 +265,7 @@ class CabinetControl(object):
             tup =  (self.comm.host, self.active_port, cmd)
             msg = "CAN bus %s, port %s timed out, command %s" % tup
             self.can_hang = True
-            raise CanBusTimeout(msg)            
+            raise CanBusTimeout(msg)
 
         payload = response.strip()
         if payload.startswith("E"):
@@ -310,12 +310,12 @@ class CabinetControl(object):
         self.log.error('can not turn off cabinet without relay board')
         raise PS.PS_Exception('cabinet without relay board are always on.')
 
-    def update_state(self):        
+    def update_state(self):
         STB = self.command(0, 'STB/', force=True)
         self.can_hang = False
         self.error_code = check(0, STB)
         rem = bool(int(self.command(0, 'REM/')))
-        self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)        
+        self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
         return self.error_code
 
     def telnet(self, commands):
@@ -446,7 +446,7 @@ class Quad_Cabinet(Big_Cabinet):
 
     DS = DevState
     MACHINE_STAT = list(Bend_Cabinet.MACHINE_STAT[0:9]) + [
-	(DS.MOVING, 'pre idle'),
+        (DS.MOVING, 'resetting cabinet...'),
         (DS.UNKNOWN, '(unused)'),
         (DS.INIT, 'ack. QV01 buck'),
         (DS.INIT, 'ack. QV01 4q'),
@@ -458,19 +458,19 @@ class Quad_Cabinet(Big_Cabinet):
         (DS.INIT, 'ack. QH02 buck master'),
         (DS.INIT, 'ack. QH02 4Q slave'),
         (DS.INIT, 'ack. QH02 4Q master'),
-        (DS.INIT, 'start QV01 buck'),
-        (DS.INIT, 'start QV01 4q'),
-        (DS.MOVING, 'stop QV01'),
-        (DS.INIT, 'start QV02 buck'),
-        (DS.INIT, 'start QV02 4q'),
-        (DS.MOVING, 'stop QV02'),
-        (DS.INIT, 'start QH01 buck'),
-        (DS.INIT, 'start QH01 4q'),
-        (DS.MOVING, 'stop QH01'),
-        (DS.INIT, 'start QH02 buck master'),
-        (DS.INIT, 'start QH02 buck slave'),
-        (DS.INIT, 'start QH02 4q'),
-        (DS.MOVING, 'stop QH02'),
+        (DS.INIT, 'starting QV01 buck'),
+        (DS.INIT, 'starting QV01 4q'),
+        (DS.MOVING, 'stopping QV01'),
+        (DS.INIT, 'starting QV02 buck'),
+        (DS.INIT, 'starting QV02 4q'),
+        (DS.MOVING, 'stopping QV02'),
+        (DS.INIT, 'starting QH01 buck'),
+        (DS.INIT, 'starting QH01 4q'),
+        (DS.MOVING, 'stopping QH01'),
+        (DS.INIT, 'startin QH02 buck master'),
+        (DS.INIT, 'starting QH02 buck slave'),
+        (DS.INIT, 'starting QH02 4q'),
+        (DS.MOVING, 'stopping QH02'),
     ]
 
 

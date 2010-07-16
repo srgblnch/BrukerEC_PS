@@ -118,6 +118,7 @@ BEND_ON_T = {
     0x03 : BT(0x08, 0x09),
     0x08 : BT(0x08, 0x09),
     0x09 : BT(0x09),
+    0x0a : 0,
     0x0b : BT(0x0b) + BT(0x0e, 0x0f) + BT(0x08, 0x09),
     0x0e : BT(0x0e, 0x0f) + BT(0x08, 0x09),
     0x0f : BT(0x0f) + BT(0x08, 0x09),
@@ -362,7 +363,7 @@ class BrukerBend_PS(PS.PowerSupply):
            bending power supply on, depending on cabinet state c and
            power supply state b.
         '''
-        if c in CAB_ON_T:
+	if c in CAB_ON_T:
             t = CAB_ON_T[c]
             if b in BEND_ON_T:
                 return t+BEND_ON_T[b]
@@ -401,7 +402,7 @@ class BrukerBend_PS(PS.PowerSupply):
         if time()<self.next_update_t: return
         self.bend1.mac = self.mac_state(self.bend1)
         self.bend2.mac = self.mac_state(self.bend2)
-	self.protect_fault_off()
+        self.protect_fault_off()
         try:
             if self.switching == SWITCH_ON:
                 fin1 = self.upswitch_on(self.bend1)
@@ -424,12 +425,12 @@ class BrukerBend_PS(PS.PowerSupply):
     def PushAttributes(self):
         if time()<self.next_update_t: return
         for aname in self.PUSHED_ATTR_EXTRA:
-                try:
-                        pa = self._read(aname)
-                        if not pa.value is None:
-                                self.push_change_event(aname, *pa.triple)
-                except Exception:
-                        self.log.error('PushAttr %s', aname, exc_info=1)
+            try:
+                pa = self._read(aname)
+                if not pa.value is None:
+                        self.push_change_event(aname, *pa.triple)
+            except Exception:
+                    self.log.error('PushAttr %s', aname, exc_info=1)
 
     def update_switch_status(self, switch, fin1, fin2):
         if fin1 and fin2 or fin1==FAULT or fin2==FAULT:
@@ -474,7 +475,7 @@ class BrukerBend_PS(PS.PowerSupply):
             if b1_status==b2_status:
                 status = b1_status
             else:
-                status = b1_status + '\n' + b2_status
+                status = b1_status + ' / ' + b2_status
 
         except Tg.CommunicationFailed:
                 status = 'communication failed'
@@ -492,8 +493,8 @@ class BrukerBend_PS(PS.PowerSupply):
             self.STAT.set_stat2(state, status)
 
     def is_fault_state(self, b, c):
-        return b in BEND_FAULT_STATES or c == CAB_FAULT_STATE 
-       
+        return b in BEND_FAULT_STATES or c == CAB_FAULT_STATE
+
     def delay_update(self, t=10):
           self.next_update_t = time()+t
 
@@ -550,26 +551,24 @@ class BrukerBend_PS(PS.PowerSupply):
             return True
 
     def protect_fault_off(self):
-	bend1 = self.bend1
+        bend1 = self.bend1
         bend2 = self.bend2
-        self.switch_off_on_fault(bend1, bend2)        
-        self.switch_off_on_fault(bend2, bend1)        
+        self.switch_off_on_fault(bend1, bend2)
+        self.switch_off_on_fault(bend2, bend1)
 
     def switch_off_on_fault(self, bendA, bendB):
         b,c = bendA.mac
         if self.is_fault_state(b,c):
-                self.switching = SWITCH_NEUTRAL
-                b2,c2 = bendB.mac
-		if b2 in BEND_POSSIBLY_ON_STATES:
-	                msg = 'switching off %s because fault [%02x,%02x] in %s' %  (bendB.dev_name(), b,c, bendB.dev_name())
-        	        self.log.info(msg)
-			try:
-				bendB['TriggerMask'] = 0
-			except Exception:
-			 	self.log.error('setting TriggerMask to 0', exc_info=1)
-        	        bendB.Off()
-		
-
+            self.switching = SWITCH_NEUTRAL
+            b2,c2 = bendB.mac
+        if b2 in BEND_POSSIBLY_ON_STATES:
+            msg = 'switching off %s because fault [%02x,%02x] in %s' %  (bendB.dev_name(), b,c, bendB.dev_name())
+            self.log.info(msg)
+            try:
+                bendB['TriggerMask'] = 0
+            except Exception:
+                self.log.error('setting TriggerMask to 0', exc_info=1)
+            bendB.Off()
 
     def mac_state(self, bend):
         baval = bend.read_attribute('MachineState')
@@ -748,6 +747,9 @@ class BrukerBend_PS(PS.PowerSupply):
 
     def read_WaveInterpolation(self, attr):
         self.read_attribute(attr)
+
+    def write_WaveInterpolation(self, attr):
+        self.write_attribute(attr)
 
     def read_WaveGeneration(self, attr):
         self.read_attribute(attr)
