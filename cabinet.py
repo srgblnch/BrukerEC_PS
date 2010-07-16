@@ -252,23 +252,20 @@ class CabinetControl(object):
             raise CanBusTimeout('CAN bus is hung, or busy')
         cmd = cmd.upper().strip()
         COM = self.comm
-        try:
-            txt = cmd+"\r"
-            COM.write(txt)
-            response = COM.readline()
-            if not response:
-                self.log.debug("timed out reading")
-                msg = "timed out waiting %s for responding to %s" % (self.comm.hopo, cmd)
-                raise PS.PS_Exception(msg)
+        txt = cmd+"\r"
+        COM.write(txt)
+        response = COM.readline()
+        if not response:
+            self.log.debug("timed out reading")
+            msg = "timed out waiting %s for responding to %s" % \
+                  (self.comm.hopo, cmd)
+            raise PS.PS_Exception(msg)
 
-            elif response[0]=='*':
-                tup =  (self.comm.host, self.active_port, cmd)
-                msg = "CAN bus %s, port %s timed out, command %s" % tup
-                self.can_hang = True
-                raise CanBusTimeout(msg)            
-
-        except socket.error, err:
-            raise
+        elif response[0]=='*':
+            tup =  (self.comm.host, self.active_port, cmd)
+            msg = "CAN bus %s, port %s timed out, command %s" % tup
+            self.can_hang = True
+            raise CanBusTimeout(msg)            
 
         payload = response.strip()
         if payload.startswith("E"):
@@ -367,6 +364,8 @@ class Wave_Cabinet(STB_Cabinet):
 class Big_Cabinet(Wave_Cabinet):
     POWER_ON_STATE = 0x06,
     POWER_OFF_STATE = 0x01,0x03
+
+    MACHINE_STAT = None # abstract
 
     errors = [
     'cabinet CAN communication',

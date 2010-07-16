@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+
 # BrukerEC_PS.py
 # This file is part of tango-ds (http://sourceforge.net/projects/tango-ds/)
 #
@@ -308,81 +309,82 @@ class BrukerEC_PS(PS.PowerSupply):
         """
         # By executing the method it is also guranteed that certain
         # tasks (detecing CurrentNominal) have succeeded
-        if self._pstype is None:
-            type_code = self.query('Version').value[0]
+        if self._pstype: return
+      
+        type_code = self.query('Version').value[0]
 
-            if type_code==state.PSTYPE_CODE_QUAD:
-                brk_config2 = self.ObjInt(state.COBJ_BRK_CONFIG2)
-                if brk_config2==state.BRKconfig2_MASTER:
-                    pst = deepcopy(state.PSTYPE_BIG_QUAD)
-                elif brk_config2 in state.BRKconfig2_STANDALONES:
-                    pst = deepcopy(state.PSTYPE_SMALL_QUAD)
-                else:
-                    msg = 'bad Port %s configured, can not be slave module' % self.Port
-                    raise PS.PS_Exception(msg)
+        if type_code==state.PSTYPE_CODE_QUAD:
+            brk_config2 = self.ObjInt(state.COBJ_BRK_CONFIG2)
+            if brk_config2==state.BRKconfig2_MASTER:
+                pst = deepcopy(state.PSTYPE_BIG_QUAD)
+            elif brk_config2 in state.BRKconfig2_STANDALONES:
+                pst = deepcopy(state.PSTYPE_SMALL_QUAD)
             else:
-                pst = deepcopy(state.REG2PSTYPE[type_code])
-            if pst is None:
-                msg = 'failed to detect suitable PS, port %d has type code %d' \
-                    % (self.Port, type_code)
+                msg = 'bad Port %s configured, can not be slave module' % self.Port
                 raise PS.PS_Exception(msg)
+        else:
+            pst = deepcopy(state.REG2PSTYPE[type_code])
+        if pst is None:
+            msg = 'failed to detect suitable PS, port %d has type code %d' \
+                % (self.Port, type_code)
+            raise PS.PS_Exception(msg)
 
-            obj_cmd = 'OBJ='+hex(state.COBJ_MAIN_IREF_SCALED)
-            rs = self.cmd_seq(obj_cmd,'ymax/','xmax/')
-            ymax = float(rs[1])
-            if rs[2].startswith('0x'):
-              xmax = int(rs[2],16)
-            else:
-              xmax = float(rs[2])
+        obj_cmd = 'OBJ='+hex(state.COBJ_MAIN_IREF_SCALED)
+        rs = self.cmd_seq(obj_cmd,'ymax/','xmax/')
+        ymax = float(rs[1])
+        if rs[2].startswith('0x'):
+            xmax = int(rs[2],16)
+        else:
+            xmax = float(rs[2])
 
-            # nominal current is fixed to be the following...
-            # 32 bit signed integer values
-            XNOMINAL = 0x3FFFFFFF
-            # determines the y nominal using the relationship between
-            # xmax and xnominal
-            tri = VDQ(round(XNOMINAL/xmax * ymax),q=AQ_VALID)
-            self.cache['CurrentNominal'] = tri
+        # nominal current is fixed to be the following...
+        # 32 bit signed integer values
+        XNOMINAL = 0x3FFFFFFF
+        # determines the y nominal using the relationship between
+        # xmax and xnominal
+        tri = VDQ(round(XNOMINAL/xmax * ymax),q=AQ_VALID)
+        self.cache['CurrentNominal'] = tri
 
-            if pst.XI:
-                err = pst.ports[0].errors
-                name = self.get_name()
-                customize_interlock_msg(err, name, pst.XI)
-            self.get_nominal_y()
-            # using self.use_waveform is valid here because the
-            # cabinet type is detected when that cabinet device connects
-            # the socket and the Version query above ensure that this has
-            # happened
-            if self.use_waveforms:
-                self.tuner = tuning.Tuner(self, pst)
+        if pst.XI:
+            err = pst.ports[0].errors
+            name = self.get_name()
+            customize_interlock_msg(err, name, pst.XI)
+        self.get_nominal_y()
+        # using self.use_waveform is valid here because the
+        # cabinet type is detected when that cabinet device connects
+        # the socket and the Version query above ensure that this has
+        # happened
+        if self.use_waveforms:
+            self.tuner = tuning.Tuner(self, pst)
 
-            # after this line the pstype is considered fully detected
-            self._pstype = pst
-            self.cab.init_counter += 1
+        # after this line the pstype is considered fully detected
+        self._pstype = pst
+        self.cab.init_counter += 1
 
-            # sets last written value for writeable attributes to their 
-            # current settings
-            try:
-                self.UploadWaveform()
+        # sets last written value for writeable attributes to their 
+        # current settings
+        try:
+            self.UploadWaveform()
 
-                cur = float(self.cmd_seq('CUR/')[0])
-                self._attr('CurrentSetpoint').set_write_value(cur)
+            cur = float(self.cmd_seq('CUR/')[0])
+            self._attr('CurrentSetpoint').set_write_value(cur)
 
-                wgen = self.update_attr('WaveGeneration')
-                self._attr('WaveGeneration').set_write_value(wgen)
+            wgen = self.update_attr('WaveGeneration')
+            self._attr('WaveGeneration').set_write_value(wgen)
 
-                wgen = self.update_attr('WaveInterpolation')
-                self._attr('WaveInterpolation').set_write_value(wgen)
+            wgen = self.update_attr('WaveInterpolation')
+            self._attr('WaveInterpolation').set_write_value(wgen)
 
-                wof = float(self.cmd_seq('WOF/')[0])
-                self._attr('WaveOffset').set_write_value(wof)
+            wof = float(self.cmd_seq('WOF/')[0])
+            self._attr('WaveOffset').set_write_value(wof)
 
-                wgen = self.update_attr('CurrentRamp')
-                self._attr('CurrentRamp').set_write_value(wgen)
+            wgen = self.update_attr('CurrentRamp')
+            self._attr('CurrentRamp').set_write_value(wgen)
 
-                self.update_attr('RegulationFrequency')
+            self.update_attr('RegulationFrequency')
 
-            except Exception, exc:
-                self.log.exception(str(exc))
+        except Exception, exc:
+            self.log.exception(str(exc))
 
         return self._pstype
 
@@ -597,7 +599,6 @@ class BrukerEC_PS(PS.PowerSupply):
                      self.STAT.OFF(ramp_mode)
 
                 elif te!=Tg.DevState.OFF:
-                     self.STAT.OFF(ramp_mode,what='cabinet')
                      extra = tus + (', '+ramp_mode if ramp_mode else '')
                      self.STAT.OFF(extra=extra)
 

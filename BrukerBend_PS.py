@@ -478,10 +478,10 @@ class BrukerBend_PS(PS.PowerSupply):
 
         except Tg.CommunicationFailed:
                 status = 'communication failed'
-                short_status = 'communication failed'
                 self.delay_update()
 
         except Tg.DevFailed, d:
+                status = 'device failure'
                 self.delay_update()
 
         except Exception, e:
