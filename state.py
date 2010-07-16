@@ -231,9 +231,6 @@ assert(len(ERRORS_BUCK)==16)
 ERRORS_CABINET = [
     'cabinet CAN communication',
     'cabinet EPROM',
-ERRORS_CABINET = [
-    'cabinet CAN communication',
-    'cabinet EPROM',
     EBIT(2),
     'cabinet watch dog',
     'communication cabinet',
@@ -278,6 +275,9 @@ PSTYPE_BEND = PSType_Big('bending',
 
 # sextupole type
 PSTYPE_SEX = PSType('sextupole', PORT_C, XI=xrange(12, 16) , mask_cab=0x08)
+PSTYPE_SEX.REG_PARAM = copy.copy(PSType.REG_PARAM)
+del PSTYPE_SEX.REG_PARAM['BuckV']
+
 # maps software types to PSTypes
 REG2PSTYPE = {
     1 : PSType('corrector', PORT_C, XI=xrange(12, 16), mask_cab=0x18), # correctors and quadrupoles?

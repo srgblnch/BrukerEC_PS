@@ -728,6 +728,12 @@ class BrukerEC_PS(PS.PowerSupply):
     def read_Current(self, attr):
         self.vdq('Current').set_attr(attr)
 
+    def query_WaveOffset(self):
+        if self.use_waveforms:
+            return self.query_ec('WOF', float)
+        else:
+            return VDQ(0.0, q=AQ_INVALID)
+
     @PS.AttrExc
     def read_CurrentSetpoint(self, attr):
         self.vdq_set(attr)
@@ -1452,7 +1458,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
 
 class BrukerEC_Cabinet_Class(PS.PowerSupply_Class):
 
-    class_property_list = {}
+    class_property_list = PS.gen_property_list(XI=4)
 
     device_property_list = PS.gen_property_list( ('IpAddress',),cpl=class_property_list)
     device_property_list.update({
