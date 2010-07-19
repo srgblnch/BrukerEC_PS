@@ -147,7 +147,7 @@ class CabinetControl(object):
         # only true when the cabinet is ON
 
         self.desc = 'generic'
-        self.stat = None
+        self.stat = DevState.UNKNOWN, "unknown"
         self.init_counter = 0
 
     is_connected = property(lambda self: self.comm.is_connected)
@@ -316,6 +316,7 @@ class CabinetControl(object):
         self.error_code = check(0, STB)
         rem = bool(int(self.command(0, 'REM/')))
         self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
+        self.stat = DevState.ON, 'cabinet ready'
         return self.error_code
 
     def telnet(self, commands):
@@ -430,7 +431,7 @@ class Bend_Cabinet(Big_Cabinet):
         (DS.STANDBY, 'STANDBY'),
         (DS.STANDBY, CAB_READY),
         (DS.MOVING, 'STOPPING'),
-        (DS.ALARM, 'interlock'),
+        (DS.ALARM, 'cabinet interlock'),
         (DS.INIT, 'switching power supply (buck) on'),
         (DS.INIT, 'switching power supply (4q) on...'),
         (DS.MOVING, 'switching power supply off...'),

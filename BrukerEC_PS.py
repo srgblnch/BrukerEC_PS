@@ -237,10 +237,13 @@ class BrukerEC_PS(PS.PowerSupply):
 
     def push_vdq(self, aname, *args, **kwargs):
         '''Updates the cached value of aname and generates an
-           apropiate change event.
+           apropiate change event, returning the updated VDQ.
         '''
-        vdq = VDQ(*args, **kwargs)
-        self.cache[aname] = vdq
+        vdq = self.cache.get(aname)
+        if vdq is None:
+            vdq = self.cache[aname] = VDQ(*args, **kwargs)
+        else:
+            vdq.update(*args, **kwargs)
         self.push_change_event(aname, *vdq.triple)
 
     def vdq(self, aname, query='auto', dflt=None, dflt_q=AQ_INVALID):
@@ -426,6 +429,7 @@ class BrukerEC_PS(PS.PowerSupply):
         '''Executes up - and downloads of waveforms.
         '''
         if not self.cab.use_waveforms: return
+        if not self.wavl.is_connected: return
         load = self.wave_load
         if load is None: return
         try:
@@ -822,7 +826,9 @@ class BrukerEC_PS(PS.PowerSupply):
         val = attr.get_write_value()
         self.cmd('WMO=%s' % int(val))
         self.update_attr('WaveGeneration')
-        self.update_attr('Voltage')
+        # pushing an INVALID voltage
+        # in case wave generation is not immediately updated
+        self.push_vdq('Voltage', q=AQ_INVALID)
 
     @PS.AttrExc
     def write_WaveX(self,attr):
@@ -1355,12 +1361,15 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         self.cab.update_state()
 
     def restart_bsw_tcp(self):
+        '''restarts bsw tcp repeater.
+        '''
         self.STAT.set_stat2(Tg.DevState.UNKNOWN, 'restarting bsw server...')
         try:
-          self.cab.telnet((
-              "kill `ps ax | grep bsw_tcp  | cut -b-6`",
-              "start_repeater.sh &"
-              ))
+            self.cab.telnet((
+                "kill `ps ax | grep bsw_tcp  | cut -b-6`",
+                "start_repeater.sh &"
+            ))
+
         except Exception:
               self.log.error('while trying to restart bsw server', exc_info=1)
 
@@ -1371,16 +1380,16 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         try:
             cab.reconnect()
             code = st = cab.update_state()
-            self.push_change_event('MachineState', cab.state_id)
-            self.push_change_event('ErrorCode', code)
+            t0 = time()
+            self.push_change_event('MachineState', cab.state_id, t0, AQ_VALID)
+            self._ErrorCode = VDQ(code, t0, q=AQ_VALID)
+            self.push_change_event('ErrorCode', *self._ErrorCode.triple)
             self.alarms.clear()
-            self._ErrorCode = VDQ(code, q=AQ_VALID)
             self.alarms += cab.get_alarms()
             if self.alarms:
                 self.STAT.ALARM(self.alarms[0])
             else:
                 self.STAT.set_stat2(*cab.stat)
-            self.wavl.reconnect()
 
         except socket.timeout:
             self.STAT.ALARM('communication timeout')
@@ -1391,8 +1400,10 @@ class BrukerEC_Cabinet(PS.PowerSupply):
             if not err.filename is None:
                 msg = str(err.filename)+': '+msg
             self._alarm(msg)
+            # connection refused error
             if err.errno==111:
                 self.restart_bsw_tcp()
+                sleep(1)
             elif err.errno==-2:
                 pass
             else:
@@ -1401,11 +1412,11 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         except cabinet.CanBusTimeout:
             self.STAT.FAULT('CAN bus hanging')
 
-        if cab.use_waveforms:
+        if cab.use_waveforms and cab.is_connected:
             try:
                 self.wavl.reconnect()
             except socket.error, err:
-                self.STAT.FAULT(Str(err))
+                self.STAT.FAULT(str(err))
                 return
 
     @PS.CommandExc

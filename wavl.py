@@ -143,7 +143,8 @@ class WaveformLoader(object):
         _WAVL = self
         self.log = logging.getLogger(self.log_name)
         self.sok = PU.FriendlySocket()
-        self.sok.reconnect_timeout = 1
+        self.sok.reconnect_delay = 20
+        self.sok.connect_timeout = 2.0
         # up- and download set their own timeouts
         self.sok.read_timeout = TIME_BASE
 
@@ -166,13 +167,16 @@ class WaveformLoader(object):
         '''reads waveform from hardware, discarding the last point.
            since the server appends a copy of the first point to then end.
         '''
+        sok = self.sok
+        if not sok.is_connected:
+            raise PS.PS_Exception('not connected')
         cmd_start_ul = 'u'+str(ch)+TERM
         wave = deque()
-        start_t = time()
-        if maxlen is None: maxlen = MAX_WAVE_LEN
         tmout = AVG_TIME_PER_SAMPLE*maxlen + TIME_BASE
         self.log.debug('starting upload %s, timeout %s', ch, tmout)
+        start_t = time()
         self.sok.write(cmd_start_ul)
+        if maxlen is None: maxlen = MAX_WAVE_LEN
         self.sok.timeout = tmout
         try_again = True
         while True:
@@ -228,18 +232,21 @@ class WaveformLoader(object):
     def download(self, ch, wave, verify=1):
         '''Transmits waveform to control unit.
         '''
+        sok = self.sok
+        if not sok.is_connected:
+            raise PS.PS_Exception('not connected')
+
         wave = tuple(wave)
         # records wave for reference if download fails
-        tmout = AVG_TIME_PER_SAMPLE * len(wave) + TIME_BASE
         self.log.debug('starting download %s, timeout %s s',ch, tmout)
-        self.sok.timeout = tmout
+        sok.timeout = AVG_TIME_PER_SAMPLE * len(wave) + TIME_BASE
         buf = 'd%d' % ch+TERM + \
             ''.join("%d"%w+TERM for w in wave) + \
             ';'+TERM
         self.log.debug('buf contains %d characters' % len(buf))
         start_t = time()
-        self.sok.write(buf)
-        ret = self.sok.readline().strip()
+        sok.write(buf)
+        ret = sok.readline().strip()
         if not ret.startswith('ok'):
             raise WaveformException(ret)
         duration = time()-start_t
