@@ -145,7 +145,7 @@ class WaveformLoader(object):
         self.sok = PU.FriendlySocket()
         self.sok.reconnect_delay = 20
         self.sok.connect_timeout = 2.0
-        # up- and download set their own timeouts
+        # up- and downloads set their own timeouts
         self.sok.read_timeout = TIME_BASE
 
     is_connected = property(lambda self: self.sok.is_connected)
@@ -236,15 +236,14 @@ class WaveformLoader(object):
         if not sok.is_connected:
             raise PS.PS_Exception('not connected')
 
-        wave = tuple(wave)
-        # records wave for reference if download fails
-        self.log.debug('starting download %s, timeout %s s',ch, tmout)
-        sok.timeout = AVG_TIME_PER_SAMPLE * len(wave) + TIME_BASE
-        buf = 'd%d' % ch+TERM + \
-            ''.join("%d"%w+TERM for w in wave) + \
-            ';'+TERM
+        wave = tuple(int(w) for w in wave)
+        self.log.debug('starting download %s, timeout %s s', ch, tmout)
+        sok.timeout = sok.read_timeout
+        sok.write('d'+str(ch)+TERM)
+        buf = ''.join(str(w)+TERM for w in wave) + ';' + TERM
         self.log.debug('buf contains %d characters' % len(buf))
         start_t = time()
+        sok.timeout = AVG_TIME_PER_SAMPLE * len(wave) + TIME_BASE
         sok.write(buf)
         ret = sok.readline().strip()
         if not ret.startswith('ok'):

@@ -103,6 +103,7 @@ def cfg_ev_ps(dev):
     cfg_change_ev(props, 'Voltage', abs=0.05)
     cfg_change_ev(props, 'MachineState', 0.1)
     cfg_change_ev(props, 'ErrorCode', 0.1)
+    cfg_change_ev(props, 'WaveOffset', 0.1)
     DATABASE.put_device_attribute_property(dev, props)
 
 def cfg_events(serv):
@@ -181,7 +182,8 @@ class BrukerEC_PS(PS.PowerSupply):
 
     PUSHED_ATTR = ('Current', 'CurrentSetpoint', 'Voltage',
       'MachineState', 'ErrorCode', 'State', 'Status',
-      'WaveStatus', 'WaveGeneration', 'RemoteMode' )
+      'WaveStatus', 'WaveGeneration', 'RemoteMode',
+      'WaveOffset')
 
     def __init__(self, cl, name):
         PS.PowerSupply.__init__(self, cl, name)
@@ -189,11 +191,6 @@ class BrukerEC_PS(PS.PowerSupply):
 
     def init_device(self, cl=None, name=None):
         PS.PowerSupply.init_device(self, cl, name)
-
-        # Converts strings configured in CabMcOx properties into integers.
-        intify = lambda ls: map(int,ls)
-        self.CabMcOn = intify(self.CabMcOn)
-        self.CabMcOff = intify(self.CabMcOff)
 
         # sets up cache of VDQ objects for safely manipulating and accessing
         # read values from within the device itself
@@ -589,16 +586,6 @@ class BrukerEC_PS(PS.PowerSupply):
 
             elif STC in t.states_switch_off:
                 self.STAT.SWITCHING_OFF()
-
-            # CabMcOn and Off is used to determine which quad is being switched
-            # on/off by the cabinet relay board
-            elif CAB_MC in self.CabMcOn:
-                step = CAB_MC-self.CabMcOn[0]
-                self.STAT.SWITCHING_ON("%d" % step)
-
-            elif CAB_MC in self.CabMcOff:
-                step = CAB_MC-self.CabMcOff[0]
-                self.STAT.SWITCHING_OFF("%d" % step)
 
             elif CAB_STAT:
                 te,tus = CAB_STAT[0:2]
@@ -1113,8 +1100,8 @@ class BrukerEC_PS_Class(PS.PowerSupply_Class):
     class_property_list = PS.gen_property_list(XI=4)
 
     class_property_list['RegulationPrecision'] = [ DevDouble,
-        'for which current delta we consider the regulation process to be finished',
-        5e-3 # 5 ppm
+        'for which current delta the regulation process is considered finished',
+        5e-3
     ]
 
     device_property_list = PS.gen_property_list(cpl=class_property_list)
@@ -1210,7 +1197,7 @@ factory.add_ec_attr('CurrentRMS', 'ARM', tp=DevDouble,
 
 # Waveform Handling
 factory.add_ec_attr('WaveOffset', 'WOF', rw=READ_WRITE,
-    extra={'format' : FMT, 'unit':'A' , 'label':'Offset'}, query='force'
+    extra={'format' : FMT, 'unit':'A' , 'label':'Offset'}
 )
 
 factory.add_ec_attr('WaveLength', 'WLN', tp=DevShort, extra={'unit':'points', 'label' : 'Length' },

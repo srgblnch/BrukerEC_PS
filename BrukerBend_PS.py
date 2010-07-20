@@ -363,7 +363,7 @@ class BrukerBend_PS(PS.PowerSupply):
            bending power supply on, depending on cabinet state c and
            power supply state b.
         '''
-	if c in CAB_ON_T:
+        if c in CAB_ON_T:
             t = CAB_ON_T[c]
             if b in BEND_ON_T:
                 return t+BEND_ON_T[b]
