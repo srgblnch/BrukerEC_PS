@@ -32,7 +32,6 @@ from __future__ import with_statement
 from time import sleep, time
 
 # extra modules
-import PyTango as Tg
 import ps_util as PU
 import ps_standard as PS
 from threading import Lock, Thread
@@ -41,8 +40,8 @@ import logging
 from types import NoneType
 import numpy as numpy
 from zlib import crc32
-import socket
 from wavl_hash import *
+from functools import partial
 
 WAVE_PORT = 3702
 TERM = '\r\n'
@@ -122,13 +121,14 @@ class WaveformException(PS.PS_Exception):
         text = response[5:]
         PS.PS_Exception.__init__(self, text)
 
-def busy(f, msg):
-    def busy(self, *args,**kwargs):
+def bebusy(msg):
+    def busy_wrapper(f, self, *args,**kwargs):
         self.busy = msg
         try:
-            return f(self,*args,**kwargs)
+            return f(self, *args,**kwargs)
         finally:
             self.busy = None
+    return lambda f: partial(busy_wrapper,f)
 
 class WaveformLoader(object):
     '''Managing the thread for up- and downloading waveforms.
@@ -162,7 +162,7 @@ class WaveformLoader(object):
     def __del__(self):
         self.disconnect_exc()
 
-    @busy('uploading ramp')
+    @bebusy('uploading ramp')
     def upload(self, ch, maxlen=None):
         '''reads waveform from hardware, discarding the last point.
            since the server appends a copy of the first point to then end.
@@ -228,7 +228,7 @@ class WaveformLoader(object):
             msg = 'waveform point %d too small: %d < %d' % (idx, min_dat, PT_MIN)
             raise PS.PS_Exception(msg)
 
-    @busy('downloading ramp')
+    @bebusy('downloading ramp')
     def download(self, ch, wave, verify=1):
         '''Transmits waveform to control unit.
         '''
@@ -260,7 +260,7 @@ class WaveformLoader(object):
         self._duration = duration
         return ret
 
-    @busy('cancel')
+    @bebusy('cancel')
     def cancel(self):
         self.sok.write('!'+TERM)
         r = self.sok.readline().strip()
