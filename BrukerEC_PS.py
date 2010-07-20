@@ -30,7 +30,7 @@ META = """
     Author: Lothar Krause <lkrause@cells.es>
     License: GPL3+ $
 """
-
+# comment for testing merge feature
 # python standard imports
 import sys
 import errno
