@@ -30,18 +30,20 @@ from __future__ import with_statement
 
 # imports from Standard Library
 from time import sleep, time
-
-# extra modules
-import ps_util as PU
-import ps_standard as PS
 from threading import Lock, Thread
 from collections import deque
 import logging
 from types import NoneType
 import numpy as numpy
 from zlib import crc32
-from wavl_hash import *
 from functools import partial
+
+# extra modules
+import PowerSupply.util as PU
+import PowerSupply.standard as PS
+
+# local imports
+from wavl_hash import *
 
 WAVE_PORT = 3702
 TERM = '\r\n'
@@ -121,14 +123,21 @@ class WaveformException(PS.PS_Exception):
         text = response[5:]
         PS.PS_Exception.__init__(self, text)
 
+
 def bebusy(msg):
-    def busy_wrapper(f, self, *args,**kwargs):
-        self.busy = msg
-        try:
-            return f(self, *args,**kwargs)
-        finally:
-            self.busy = None
-    return lambda f: partial(busy_wrapper,f)
+
+    def wrapper_maker(f):
+        def wrap_busy(self, *args, **kwargs):
+
+            self.busy = msg
+            try:
+                return f(self, *args,**kwargs)
+            finally:
+                self.busy = None
+            print 'wrapper maker',f
+        return wrap_busy
+
+    return wrapper_maker
 
 class WaveformLoader(object):
     '''Managing the thread for up- and downloading waveforms.
@@ -237,9 +246,11 @@ class WaveformLoader(object):
             raise PS.PS_Exception('not connected')
 
         wave = tuple(int(w) for w in wave)
+        tmout = self.sok.timeout
         self.log.debug('starting download %s, timeout %s s', ch, tmout)
         sok.timeout = sok.read_timeout
-        sok.write('d'+str(ch)+TERM)
+        start_dl_cmd = 'd'+str(ch)+TERM
+        sok.write(start_dl_cmd)
         buf = ''.join(str(w)+TERM for w in wave) + ';' + TERM
         self.log.debug('buf contains %d characters' % len(buf))
         start_t = time()

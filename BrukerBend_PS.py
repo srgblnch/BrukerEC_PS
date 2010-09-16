@@ -31,23 +31,26 @@ META = """
     License: GPL3+ $
 """
 
-import PyTango as Tg
-import sys
-import ps_standard as PS
-from ps_util import nop
+import logging
 import traceback
 import re
-from time import time
+from time import time, sleep
 from pprint import pprint
 from copy import deepcopy
+import threading
+from functools import partial
+
+import PyTango as Tg
+from PyTango import DevState
+import PowerSupply.standard as PS
+from PowerSupply.util import nop
+
 
 AQ_ALARM = Tg.AttrQuality.ATTR_ALARM
 AQ_WARNING = Tg.AttrQuality.ATTR_WARNING
 AQ_VALID = Tg.AttrQuality.ATTR_VALID
 AQ_INVALID = Tg.AttrQuality.ATTR_INVALID
 AQ_CHANGING = Tg.AttrQuality.ATTR_CHANGING
-
-DevState = Tg.DevState
 
 # state definitions
 CAB_OFF_STATE = 0x01
@@ -140,6 +143,20 @@ BEND_OFF_T = {
 
 BEND_PENDING = frozenset(s for s,t in BEND_T.iteritems() if t)
 
+# used for synchronization
+GSM_CONFIG = 0x00
+GSM_CONFIG_1 = 0x01
+SYNC_STATE = 0x02
+OFF_STATE = 0x03
+
+# time until a trigger is expected to be received, and update to be forwarded
+# at 3.125 Hz this is at most 0.32 seconds,
+# plus max time that it takes BrukerEC_PS to be updated when working properly
+TRIG_PERIOD = 0.32 + 0.5
+
+# how long it maximally takes until all power supplies are in SYNC state
+TRIG_TIMEOUT = SYNC_TIMEOUT = 3.0
+
 # end of state definitions
 
 SWITCH_NEUTRAL = 'sw 0'
@@ -152,6 +169,163 @@ tv2time = lambda x: x.tv_sec + x.tv_usec/1000.0
 SECONDS_PAT = re.compile(r'^(.*) (\d*.\d+)s$')
 
 FAULT = object()
+
+# synchronization procedure states
+SS_UNKNOWN = 100
+SS_THREAD_START = 102
+SS_START = 103
+SS_CANCEL_THREAD = 111
+SS_SUCCESS = 105
+SS_FAIL = 113
+
+class SyncFail(Exception):
+    pass
+
+def sync_routine(impl, force):
+
+    ss = impl.sync_status
+
+    if ss.thread_active:
+        return
+    ss.thread_active = True
+    ss.state = SS_THREAD_START
+    try:
+        pcs = partial(impl.push_change_event, 'SyncStatus')
+        def check_cancel():
+            if ss.state == SS_CANCEL_THREAD:
+                raise SyncFail('synchronization cancelled')
+
+        def push(*args,**kwargs):
+            check_cancel()
+            ss.update(*args, **kwargs)
+            pcs(*ss.triple)
+
+        def wait_all(tmout, check):
+            start_t = time()
+            while time()-start_t < tmout:
+                check_cancel()
+                if all(check(st) for st in impl.get_all_states()):
+                    return False
+                sleep(0.05)
+            return True
+
+        push()
+        if not force and any(st!=GSM_CONFIG for st in impl.get_all_states()):
+            raise SyncFail('not ready for synchronization')
+
+        ss.state = SS_START
+
+        try:
+            # stores and checks current event receiver state
+            evr_state = impl.trig.State()
+            if not evr_state in (DevState.ON, DevState.OFF) and not force:
+                raise SyncFail('event receiver is in %s state, must be ON or OFF')
+
+            push(q=AQ_CHANGING)
+            push('switching off timing')
+            impl.trig.Off()
+            while impl.trig.State()==DevState.ON:
+                check_cancel()
+                push('waiting for timing to become OFF')
+                sleep(0.05)
+            push('switched off timing')
+
+            # sends SYNC commands
+            for cab in impl.sync_cab:
+                msg = 'sending sync to '+cab.label
+                push(msg)
+                try:
+                    cab.Sync()
+                except Exception:
+                    impl.log.exception(msg)
+
+            push('sent synchronization commands')
+
+            # waiting for supplies to receive external trigger
+            if wait_all(SYNC_TIMEOUT, lambda st: st==SYNC_STATE):
+                raise SyncFail('timed out after %s s to become ready for trigger' % SYNC_TIMEOUT)
+
+            # re-activates timing if enabled before to send external trigger
+            if impl.trig.State()==DevState.OFF:
+                if evr_state==DevState.ON:
+                    push('re-enabling timing')
+                    impl.trig.On()
+
+            # waiting for all supplies to receive an external trigger
+            # and to leave SYNC_STATE
+            # signal comes either either from timing system or from signal generator
+            if wait_all(TRIG_TIMEOUT, lambda st: st!=SYNC_STATE):
+                raise SyncFail('timed out waiting %s s for power supplies to receive trigger')
+
+            ss.state = SS_SUCCESS
+
+        except SyncFail, exc:
+            ss.state = SS_FAIL
+            push(str(exc), q=AQ_ALARM)
+
+        except Exception, exc:
+            ss.state = SS_FAIL
+            push(str(exc), q=AQ_ALARM)
+
+        finally:
+            push()
+            # re-enables trigger if they were enabled before
+            if impl.trig.State()==DevState.OFF and evr_state==DevState.ON:
+                push('re-enabling timing')
+                impl.trig.On()
+    finally:
+        ss.thread_active = False
+        impl.UpdateSyncStatus();
+
+class SyncStatus(PS.VDQ):
+    __slots__ = PS.VDQ.__slots__ + ('state', 'thread_active')
+
+    def __init__(self):
+        PS.VDQ.__init__(self)
+        # timestamp of last pending synchronization attempt
+        self.state = SS_UNKNOWN
+        self.thread_active = False
+
+class BendProxy(Tg.DeviceProxy):
+
+    # indicates whether it is a good idea to read / write attributes of this
+    # device
+    okay = False
+
+    def __init__(self, name):
+        Tg.DeviceProxy.__init__(self, name)
+
+        # finds cabinet device for bending
+        serv_name = 'BrukerEC_PS/bo_b'+name[-1]
+        ls = DB.get_device_class_list(serv_name)
+        dictum = dict(zip(ls[1::2],ls[::2]))
+        cab_name = dictum['BrukerEC_Cabinet']
+        self.cab = Tg.DeviceProxy(cab_name)
+        self.log = logging.getLogger(name)
+
+    def Off(self):
+        try:
+            self['TriggerMask'] = 0
+            sleep(0.05)
+        except Exception:
+            self.log.error('setting TriggerMask to 0', exc_info=1)
+        self.command_inout('Off')
+
+
+class QuadProxy(Tg.DeviceProxy):
+
+    def __init__(self, name):
+        Tg.DeviceProxy.__init__(self, name)
+
+    def get_mac(self):
+        aval = self['MachineState']
+        if aval.quality==AQ_VALID:
+            return aval.value, None
+        else:
+            name = self.get_name().split('/')[-1]
+            raise PS.PS_Exception('failure to get valid state id for %s' % name)
+
+    mac = property(get_mac)
 
 def strip_s(x):
     mat = SECONDS_PAT.match(x)
@@ -176,12 +350,13 @@ def merge_str(v1,v2):
 
 class BrukerBend_PS(PS.PowerSupply):
 
- #   PUSHED_AT
     PUSHED_ATTR_EXTRA = ['Voltage', 'Current', 'CurrentSetpoint',
         'WaveGeneration', 'WaveOffset', 'WaveLength', 'WaveDuration',
-        'TriggerMask', 'WaveName']
+        'TriggerMask', 'WaveName'
+    ]
 
-    PUSHED_ATTR = ['State', 'Status'] + PUSHED_ATTR_EXTRA
+    PUSHED_ATTR = ['State', 'Status', 'SyncStatus' ] + PUSHED_ATTR_EXTRA
+
     # Device and Class Properties
     Bend1 = None
     Bend2 = None
@@ -200,28 +375,27 @@ class BrukerBend_PS(PS.PowerSupply):
         self._aWaveGeneration = PS.VDQ(None)
         self.next_update_t = 0
 
-        self.bend1 = Tg.DeviceProxy(self.Bend1)
-        self.bend2 = Tg.DeviceProxy(self.Bend2)
-
-        def find_cab(ec_name):
-            """finds name of BrukerEC_Cabinet corresponding to
-               the device name specified
-            """
-            serv_name = 'BrukerEC_PS/bo_b'+ec_name[-1]
-            ls = DB.get_device_class_list(serv_name)
-            dictum = dict(zip(ls[1::2],ls[::2]))
-            return dictum['BrukerEC_Cabinet']
-
-        self.bend1.cab = Tg.DeviceProxy(find_cab(self.Bend1))
-        self.bend2.cab = Tg.DeviceProxy(find_cab(self.Bend2))
+        self.bend1 = BendProxy(self.Bend1)
+        self.bend2 = BendProxy(self.Bend2)
 
         # threshold when warning / alarms will be signalled
         self.AbsDiff = 0.1
         self.cabq = Tg.DeviceProxy(self.QuadCabinet)
         self.trig = Tg.DeviceProxy(self.Trigger)
 
-        # prepares also DeviceProxy for the Synchronization
-        self.sync_devices = [ self.bend1.cab, self.bend2.cab, self.cabq ]
+        # list of power supplies to be synchronized
+        self.sync_ps = [ self.bend1, self.bend2 ]
+        # cabinet receiving Sync command
+        self.sync_cab = [ self.bend1.cab, self.bend2.cab, self.cabq ]
+
+        # registers quadrupoles power supplies for synchronization
+        serv_name = self.cabq.adm_name().partition('/')[-1]
+        ls = DB.get_device_class_list(serv_name)
+        for d,c in zip(ls[1::2],ls[::2]):
+            if c=='BrukerEC_PS':
+                self.sync_ps.append(QuadProxy(d))
+
+        self.sync_status = SyncStatus()
 
     @PS.CommandExc
     def Lock(self):
@@ -239,8 +413,9 @@ class BrukerBend_PS(PS.PowerSupply):
 
     def shiver(self, aname, x, y):
         """Every other second x is chosen, else y
-	"""
-	return x if int(time()) % 2 else y
+        """
+        nop(aname)
+        return x if int(time()) % 2 else y
 
     def distill_ne_quality(self, quality, x,y):
         if quality==AQ_INVALID: return AQ_INVALID
@@ -258,6 +433,8 @@ class BrukerBend_PS(PS.PowerSupply):
     def read_attribute(self, attr, qual_fun=None, valfun=None):
         def read1(bend):
             aname = attr.get_name()
+            if not bend.okay:
+                return None
             try:
                     aval = bend.read_attribute(attr.get_name())
                     return aval
@@ -318,6 +495,7 @@ class BrukerBend_PS(PS.PowerSupply):
         return quality
 
     def is_Voltage_allowed(self, write):
+        nop(write)
         return not self._aWaveGeneration.value
 
     @PS.AttrExc
@@ -337,7 +515,7 @@ class BrukerBend_PS(PS.PowerSupply):
         quality = aval.quality
         attr.set_value_date_quality(I, timestamp, quality)
 
-    PS.CommandExc
+    @PS.CommandExc
     def On(self):
         self.set_state(DevState.INIT)
         self.set_status('switching on...')
@@ -349,7 +527,7 @@ class BrukerBend_PS(PS.PowerSupply):
         self.upswitch_on(self.bend1)
         self.upswitch_on(self.bend2)
 
-    PS.CommandExc
+    @PS.CommandExc
     def Off(self):
         self.set_state(DevState.INIT)
         self.set_status('switching off...')
@@ -380,6 +558,7 @@ class BrukerBend_PS(PS.PowerSupply):
            bending power supply off, depending on cabinet state c and
            power supply state b.
         '''
+        nop(c)
         return BEND_OFF_T.get(b, 0.0)
 
     def estimate_switch_on_time(self, mc1=None, mc2=None):
@@ -400,10 +579,11 @@ class BrukerBend_PS(PS.PowerSupply):
     @PS.CommandExc
     def UpdateState(self):
         if time()<self.next_update_t: return
-        self.bend1.mac = self.mac_state(self.bend1)
-        self.bend2.mac = self.mac_state(self.bend2)
-        self.protect_fault_off()
         try:
+            self.bend1.mac = self.mac_state(self.bend1)
+            self.bend2.mac = self.mac_state(self.bend2)
+
+            self.protect_fault_off()
             if self.switching == SWITCH_ON:
                 fin1 = self.upswitch_on(self.bend1)
                 fin2 = self.upswitch_on(self.bend2)
@@ -413,7 +593,12 @@ class BrukerBend_PS(PS.PowerSupply):
                 fin2 = self.upswitch_off(self.bend2)
                 self.update_switch_status('off', fin1, fin2)
 
-        except Exception:
+        except Tg.DevFailed, df:
+            self._alarm(df[-1].desc)
+            raise
+
+        except Exception, exc:
+            self._alarm(exc)
             self.switching = SWITCH_NEUTRAL
             raise
 
@@ -428,7 +613,7 @@ class BrukerBend_PS(PS.PowerSupply):
             try:
                 pa = self._read(aname)
                 if not pa.value is None:
-                        self.push_change_event(aname, *pa.triple)
+                    self.push_change_event(aname, *pa.triple)
             except Exception:
                     self.log.error('PushAttr %s', aname, exc_info=1)
 
@@ -476,13 +661,23 @@ class BrukerBend_PS(PS.PowerSupply):
                 status = b1_status
             else:
                 status = b1_status + ' / ' + b2_status
+                if len(status)>80:
+                    b1l = str(b1_state).lower()
+                    b2l = str(b2_state).lower()
+                    if b1_state == b2_state:
+                        status = '%s' % b1l
+                    else:
+                        status = '%s / %s' % (b1l, b2l)
 
-        except Tg.CommunicationFailed:
+
+        except Tg.CommunicationFailed, commfail:
                 status = 'communication failed'
+                self.log.debug(str(commfail))
                 self.delay_update()
 
-        except Tg.DevFailed, d:
+        except Tg.DevFailed, df:
                 status = 'device failure'
+                self.log.debug(str(df))
                 self.delay_update()
 
         except Exception, e:
@@ -561,21 +756,15 @@ class BrukerBend_PS(PS.PowerSupply):
         if self.is_fault_state(b,c):
             self.switching = SWITCH_NEUTRAL
             b2,c2 = bendB.mac
-        if b2 in BEND_POSSIBLY_ON_STATES:
-            msg = 'switching off %s because fault [%02x,%02x] in %s' %  (bendB.dev_name(), b,c, bendB.dev_name())
-            self.log.info(msg)
-            try:
-                bendB['TriggerMask'] = 0
-            except Exception:
-                self.log.error('setting TriggerMask to 0', exc_info=1)
-            bendB.Off()
+            if b2 in BEND_POSSIBLY_ON_STATES:
+                msg = 'switching off %s because fault [%02x,%02x] in %s' %  (bendB.dev_name(), b,c, bendB.dev_name())
+                self.log.info(msg)
+                bendB.Off()
 
     def mac_state(self, bend):
         baval = bend.read_attribute('MachineState')
         cabaval = bend.cab.read_attribute('MachineState')
-        assert baval.quality == AQ_VALID
-# TODO: possibly the value could be non if qualiy INVALID
-#        assert cabaval.quality == AQ_VALID
+        bend.okay = (baval.quality == AQ_VALID)
         return baval.value, cabaval.value,
 
     ### Attributes ###
@@ -617,6 +806,7 @@ class BrukerBend_PS(PS.PowerSupply):
                 return q
 
         def valfun(aname, aval1, aval2):
+            nop(aname)
             return (aval1+aval2) / 2
         self.read_attribute(attr, qfun, valfun=valfun)
 
@@ -629,34 +819,58 @@ class BrukerBend_PS(PS.PowerSupply):
     def read_CurrentSetpoint(self, attr):
         self.read_attribute(attr)
 
-    @PS.CommandExc
-    def Sync(self):
+    def get_all_states(self):
+        return [ d.mac[0] for d in self.sync_ps ]
 
-        # checks state of power supplies
-        for d in self.sync_devices:
-            aval = d.read_attribute('MachineState')
-            if aval.quality != AQ_VALID:
-                raise PS.PS_Exception('MachineState attribute is not valid')
-            if aval.value != STATE_SYNC:
-                raise PS.PS_Exception('device %r not ready to be sync\'d' % self.get_name())
+    def UpdateSyncStatus(self):
+        """checks state of all power supplies
+           returns GSM_CONFIG if all PS are in GSM_CONFIG or GSM_CONFIG_1
+           SYNC_STATE if all PS are in SYNC_STATE
+           or else None.
+           Updates attribute value but does not push events.
+        """
+        vdq = self.sync_status
+        if vdq.thread_active: return
 
-        # checks and switches off triggers
-        evr_state = self.trig.State()
-        if not evr_state in (DevState.ON, DevState.OFF):
-            raise PS.PS_Exception('event receiver is in %s state, must be ON or OFF')
-
+        state = self.get_all_states()
         try:
-            self.trig.Off()
+            if all(s==GSM_CONFIG for s in state):
+                vdq.update('all ready for synchronization', q=AQ_VALID)
+                return GSM_CONFIG
 
-            # sends SYNC commands
-            for d in self.sync_devices:
-                d.Command( ['SYNC'] )
+            elif time()-vdq.date < 10.0:
+                return None
+
+            else:
+                vdq.update('not ready for synchronization', q=AQ_VALID)
+                return None
+
+        except PS.PS_Exception, exc:
+            vdq.state = SS_FAIL
+            msg = 'warning: %s' % exc
+            vdq.update(msg, q=AQ_WARNING)
+            self.log.exception(msg)
+
+        except Exception, exc:
+            vdq.state = SS_FAIL
+            msg = 'alarm: %s' % exc
+            vdq.update(msg, q=AQ_ALARM)
+            self.log.exception(msg)
 
 
-        finally:
-            # re-enables trigger if they were enabled before
-            if evr_state == DevState.ON:
-                self.trig.On()
+    @PS.CommandExc
+    def Sync(self, force=False):
+        if self.sync_status.thread_active:
+            return
+        thread = threading.Thread(target=sync_routine, args=(impl, force),name='bo sync')
+        thread.start()
+
+    @PS.CommandExc
+    def SyncCancel(self):
+        if not self.sync_status.thread_active:
+            return
+        else:
+            self.sync_status.ss_state = SS_CANCEL_THREAD
 
     @PS.AttrExc
     def read_Errors(self, attr):
@@ -772,9 +986,17 @@ class BrukerBend_PS(PS.PowerSupply):
     def write_TriggerMask(self, wattr):
         self.write_attribute(wattr)
 
-
     def read_WaveId(self, attr):
         self.read_attribute(attr)
+
+    @PS.AttrExc
+    def read_SyncStatus(self, attr):
+        # polling events and configuring change parameters must be enabled
+        # otherwise the Sync() command will not be pushing events.
+        vdq = self.sync_status
+        if time()-vdq.date > 3.0:
+            self.UpdateSyncStatus()
+        self.sync_status.set_attr(attr)
 
 class BrukerBend_PS_Class(Tg.DeviceClass):
 
@@ -813,7 +1035,7 @@ class BrukerBend_PS_Class(Tg.DeviceClass):
           'PushAttributes' : [ [Tg.DevVoid],[Tg.DevVoid], {'polling period' : 20000 }],
           'On' : [ [Tg.DevVoid],[Tg.DevVoid]],
           'Off' : [ [Tg.DevVoid],[Tg.DevVoid]],
-          'Sync' : [ [Tg.DevVoid, 'sync sync'],[Tg.DevVoid],
+          'Sync' : [ [Tg.DevBoolean, 'whether to force synchronization even if some power supplies are not ready'],[Tg.DevVoid],
               { 'display level' : Tg.DispLevel.EXPERT }
           ],
        })
@@ -839,8 +1061,10 @@ class BrukerBend_PS_Class(Tg.DeviceClass):
                     { 'min value' : 0, 'max value' : 0x3fffffff,
     'description' : '''number of triggers to consider:
 0:no wave generated, 1:generate single wave, 0x3fffffff:continously''' }
-                    ]}
-        )
+                    ],
+                'SyncStatus' : [[ Tg.DevString, Tg.SCALAR, Tg.READ ]],
+        })
+
         attr_list['CurrentSetpoint'][1]['format'] = FMT
         attr_list['Voltage'][1]['format'] = FMT
         attr_list['Current'][1]['format'] = FMT
@@ -853,4 +1077,4 @@ class BrukerBend_PS_Class(Tg.DeviceClass):
 
 if __name__ == '__main__':
     classes = (BrukerBend_PS, )
-    PS.tango_main( 'BrukerBend_PS', sys.argv, classes)
+    PS.tango_main( 'BrukerBend_PS', classes)

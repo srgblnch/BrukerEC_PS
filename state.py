@@ -10,15 +10,15 @@
 import copy
 
 # Extra Packages
-import ps_standard as PS
 from PyTango import DevState
 import PyTango as Tg
 import traceback
 
+import PowerSupply.standard as PS
 
 PSSL = PS.StateLogic
 
-class Port(object):
+class Module(object):
 
     def __init__(self, name, err, mask=0):
         self.name = name
@@ -55,9 +55,9 @@ class PSType(object):
         'MainV_Ki' : RP(0x2027)
     }
 
-    def __init__(self, name, *ports, **kwargs):
+    def __init__(self, name, *module_list, **kwargs):
         self.name = name
-        self.ports = ports
+        self.module = module_list
         self.XI = kwargs.get('XI', ())
         # if not on well, it is off
         self.states_on = (10, )
@@ -71,15 +71,15 @@ class PSType(object):
         '''Updates the message displayed for the external interlocks of this
            power supply.
         '''
-        p0 = self.ports[0]
+        p0 = self.module[0]
         for idx,msg in zip(self.XI,msg_list):
-            p0.errors[idx] = msg      
+            p0.errors[idx] = msg
 
     def __str__(self):
-        return self.name + " PS "+ str(self.ports)
+        return self.name + " PS "+ str(self.module)
 
     def __repr__(self):
-        return self.__class__.__name__ + repr( (self.name, self.ports) )
+        return self.__class__.__name__ + repr( (self.name, self.module) )
 
     def query_Voltage(self, impl):
         cmd = impl.cab.command
@@ -158,7 +158,7 @@ ERRORS_CORR = [
     'switcher overtemperature',
     'rectifier overtemperature',
     'transformer overtemperature'
-] + E_EXTERN 
+] + E_EXTERN
 assert(len(ERRORS_CORR)==16)
 
 # errors for t3 (quad 4Q)
@@ -175,7 +175,7 @@ ERRORS_QUAD = [
 
     ## Error byte, MSB, 0x0100 ... 0x8000
     'unbalance',
-    '4Q IGBT fault (bit 9)',    
+    '4Q IGBT fault (bit 9)',
     E_BUCK_TEMP,
     EBIT(11),
 ] + E_EXTERN
@@ -245,16 +245,16 @@ ERRORS_CABINET = [
 ] + E_EXTERN
 assert(len(ERRORS_CABINET)==16)
 
-PORT_RELAY = Port('Relay', ERRORS_CABINET)
-PORT_RELAY.port = 19
-PORT_Q = Port('quad 4Q', ERRORS_QUAD)
-PORT_BM = Port('bend 4Q master', ERRORS_BEND)
-PORT_BS = Port('bend 4Q slave', ERRORS_BEND)
-PORT_BUCK = Port('buck', ERRORS_BUCK)
-PORT_BUCK1 = Port('buck 1', ERRORS_BUCK)
-PORT_BUCK2 = Port('buck 2', ERRORS_BUCK)
-PORT_C = Port('corrector', ERRORS_CORR)
-PORT_S = Port('sextupole', ERRORS_CORR)
+MOD_RELAY = Module('Relay', ERRORS_CABINET)
+MOD_RELAY.port = 19
+MOD_Q = Module('4Q', ERRORS_QUAD)
+MOD_BM = Module('4Q master', ERRORS_BEND)
+MOD_BS = Module('4Q slave', ERRORS_BEND)
+MOD_BUCK = Module('buck', ERRORS_BUCK)
+MOD_BUCK1 = Module('buck 1', ERRORS_BUCK)
+MOD_BUCK2 = Module('buck 2', ERRORS_BUCK)
+MOD_C = Module('corrector', ERRORS_CORR)
+MOD_S = Module('sextupole', ERRORS_CORR)
 CABINET_XI=xrange(12, 16)
 
 # quadrupole types
@@ -262,30 +262,30 @@ PSTYPE_CODE_QUAD = 3
 
 # defining PsType objects
 # quad with 2 sub-modules, ( QS120/180, QC320/340 )
-PSTYPE_SMALL_QUAD = PSType_SmallQuad('small quadrupole', 
-  PORT_Q, PORT_BUCK
+PSTYPE_SMALL_QUAD = PSType_SmallQuad('small quadrupole',
+  MOD_Q, MOD_BUCK
 )
 # quad with 4 sub-modules ( QC340 )
-PSTYPE_BIG_QUAD = PSType_Big('big quadrupole', 
-  PORT_Q, PORT_BUCK1, PORT_Q, PORT_BUCK2
+PSTYPE_BIG_QUAD = PSType_Big('big quadrupole',
+  MOD_Q, MOD_BUCK1, MOD_Q, MOD_BUCK2
 )
 
-PSTYPE_BEND = PSType_Big('bending', 
-  PORT_BM, PORT_BUCK1, PORT_BS, PORT_BUCK2, Isafe=470)
+PSTYPE_BEND = PSType_Big('bending',
+  MOD_BM, MOD_BUCK1, MOD_BS, MOD_BUCK2, Isafe=470)
 
 # sextupole type
-PSTYPE_SEX = PSType('sextupole', PORT_C, XI=xrange(12, 16) , mask_cab=0x08)
+PSTYPE_SEX = PSType('sextupole', MOD_C, XI=xrange(12, 16) , mask_cab=0x08)
 PSTYPE_SEX.REG_PARAM = copy.copy(PSType.REG_PARAM)
 del PSTYPE_SEX.REG_PARAM['BuckV']
 
 # maps software types to PSTypes
 REG2PSTYPE = {
-    1 : PSType('corrector', PORT_C, XI=xrange(12, 16), mask_cab=0x18), # correctors and quadrupoles?
-    2 : PSType('LT bend', PORT_C, XI=xrange(12, 16)), # bending magnets of the LT cabinet
+    1 : PSType('corrector', MOD_C, XI=xrange(12, 16), mask_cab=0x18), # correctors and quadrupoles?
+    2 : PSType('LT bend', MOD_C, XI=xrange(12, 16)), # bending magnets of the LT cabinet
     3 : None, # is a quadrupole but could have 2 or 4 submodules, so further work required
     4 : None, #< buck for ???
     5 : None, # quadrupole relay board
-    6 : None, #< buck for ???,
+    6 : PSType('BT', MOD_C, XI=xrange(12,16)), #< code used by both buck and BT,
     7 : PSTYPE_SEX,
     8 : PSTYPE_BEND,
     9 :  None, #< dipole relay board
@@ -309,9 +309,9 @@ class StateLogic(PS.StateLogic):
 
     FAULT = PSSL.FAULT
     MACHINE_STAT = {
-        0x00: (PSSL.INIT_X, 'GSM_CONFIG' ),
-        0x01: (PSSL.INIT_X, 'GSM_CONFIG_1' ),
-        0x02: (PSSL.ALARM, 'SYNC'),
+        0x00: (PSSL.ALARM, 'synchronization required' ),
+        0x01: (PSSL.ALARM, 'synchronization required 1' ),
+        0x02: (PSSL.ALARM, 'awaiting synchronization trigger'),
         0x03: (PSSL.OFF,),
         0x04: (PSSL.FAULT, 'ADC_CAL'),
         0x05: (PSSL.SWITCHING_ON, 'INRUSH'),
@@ -321,11 +321,11 @@ class StateLogic(PS.StateLogic):
         0x09: (PSSL.ALARM, 'REG ON'),
         0x0a: (PSSL.ON_CURRENT,),
         0x0b: (PSSL.SWITCHING_OFF,),
-        0x0c: (PSSL.INTERLOCK,),
-        0x0d: (PSSL.ALARM, 'FAULT_ZC'),
+        0x0c: (PSSL.ALARM, 'fault'),
+        0x0d: (PSSL.ALARM, 'fault ZC'),
         29: (PSSL.ALARM, 'ALARM 29')
     }
 
-FAULT_STATES = (0x0d,)
-INTERLOCK_STATES = (0x0c,)
+# dummy object that is never equal to a 'real' state (integer)
+STATE_NONE = object()
 

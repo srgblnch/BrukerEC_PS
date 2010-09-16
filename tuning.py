@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 
-import ps_standard as PS
-import PyTango as Tg
+# py standard library
 from time import sleep
 import traceback
+
+# TANGO imports
+import PyTango as Tg
+import PowerSupply.standard as PS
 
 PSEUDO_ATTR = PS.PseudoAttr()
 
@@ -25,18 +28,22 @@ class Tuner(object):
         @PS.AttrExc
         def write_RegulationTuneable(inst, attr):
             value = attr.get_write_value()
+            inst.push_change_event('RegulationTuneable', value)
             if inst.tuner:
                 inst.tuner.writeable = value
             else:
                 raise PS.PS_Exception('could not write attribute RegulationTuneable because initialization not finished.')
 
         attr = Tg.Attr('RegulationTuneable', Tg.DevBoolean, Tg.READ_WRITE)
-        try:
-            self.impl.add_attribute(attr,
-                r_meth=read_RegulationTuneable,
-                w_meth=write_RegulationTuneable)
-        except ValueError:
-            traceback.print_exc()
+        self.impl.add_attribute(attr,
+            r_meth=read_RegulationTuneable,
+            w_meth=write_RegulationTuneable)
+        while True:
+            try:
+                self.impl.set_change_event('RegulationTuneable', True)
+                break
+            except ValueError:
+                traceback.print_exc()
         aprop = Tg.UserDefaultAttrProp()
         aprop.set_description('whether modifying parameters related to regulation loop should be allowed or not. only set this to true when you really, really know what you are doing AND have a backup.')
         attr.set_default_properties(aprop)
@@ -45,14 +52,13 @@ class Tuner(object):
         self.impl = impl
         self.pstype = pstype
         self.add_RegulationTuneable()
-
         # the tuneable flag is held in write_value of RegulationTuneable attribute
         self.RegulationTuneable = impl._attr('RegulationTuneable')
         self.RegulationTuneable.set_write_value(False)
 
         # Regulation Loop Control
-        self.has_buck = len(pstype.ports)>1
-        master_slave = len(pstype.ports)>2
+        self.has_buck = len(pstype.module)>1
+        master_slave = len(pstype.module)>2
 
         self.attr_list = []
         self.add_ports()
