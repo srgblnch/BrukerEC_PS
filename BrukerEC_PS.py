@@ -1513,13 +1513,6 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         self.cab.power_off()
 
     @PS.CommandExc
-    def Uptime(self):
-        tel = telnetlib.Telnet(self.IpAddress)
-        tel.write('uptime\n')
-        up = tel.read_line()
-        return up
-
-    @PS.CommandExc
     def Tel(self, commands):
         return self.cab.telnet(commands)
 
