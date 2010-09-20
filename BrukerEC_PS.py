@@ -471,6 +471,8 @@ class BrukerEC_PS(PS.PowerSupply):
             diff_t = t0-start_t
             self.wave_load = None
             sleep(0.25)
+            self.cab.process_command_queue()
+
             self.cab.update_state()
             try:
                 self.update_attr('WaveLength')
@@ -513,9 +515,10 @@ class BrukerEC_PS(PS.PowerSupply):
         '''Updates the state of device.
         '''
         try:
-            self._up_start_t = time()
             self.cab.process_command_queue()
 
+            # performs wave up/down-loads first, if any
+            self.load_waveform()
             cab = self.cab
             if not cab.is_connected:
                 if cab.comm._exc_msg:
@@ -523,9 +526,13 @@ class BrukerEC_PS(PS.PowerSupply):
                 else:
                     self.STAT.COMM_ERROR('no connection to control unit %s' % cab.host)
                 return
+            self._up_start_t = time()
 
             # detects power supply specific settings
             t = self.pstype()
+
+
+            # status update
             # disabled this check because it causes problems whe
             # starting up DS for a cabinet with hung module
 #            if not self.cab.all_initialized():
@@ -546,8 +553,6 @@ class BrukerEC_PS(PS.PowerSupply):
                 else:
                     return self.value(aname, dflt=dflt)
 
-            # performs wave up/down-loads first, if any
-            self.load_waveform()
 
             # every fourth step one of the following is updated
             REM = up('RemoteMode',1, dflt=False)
@@ -661,7 +666,7 @@ class BrukerEC_PS(PS.PowerSupply):
 
     @PS.CommandExc
     def On(self):
-        # use 'broadcast' mode
+        # uses 'local' trigger mode
         if not self.wavl.busy:
             self.cmd('WTS=0')
         qstat = self.STAT if self.wavl.busy else None
