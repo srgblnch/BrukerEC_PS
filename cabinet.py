@@ -412,14 +412,18 @@ class CabinetControl(object):
                 alarm_msg = str(exc)
                 STAT.ALARM(alarm_msg, sticky=True)
 
-    def telnet(self, commands):
-        tel = telnetlib.Telnet(self.comm.host, timeout=2.5)
+    def telnet(self, commands, timeout=2.5):
+        t0 = time()
+        def to():
+            y = max(t0+timeout-time(), 0.0)
+            return y
+        tel = telnetlib.Telnet(self.comm.host, timeout=to())
         PS1 = '# '
-        tel.read_until(PS1)
+        tel.read_until(PS1, timeout=to())
         ret = ''
         for c in commands:
             tel.write(c+'\n')
-            ret += tel.read_until(PS1)
+            ret += tel.read_until(PS1, timeout=to())
         tel.write('exit\n')
         ret += tel.read_very_eager()
         tel.close()
