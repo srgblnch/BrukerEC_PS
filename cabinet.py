@@ -364,7 +364,6 @@ class CabinetControl(object):
     def disconnect_exc(self):
         self.comm.disconnect_exc()
         self.active_port = None
-        self.can_hang.clear()
 
     def switch_power(self, ps_port, bit, qstat=None):
         '''Switch power of PS on or off.
@@ -388,7 +387,7 @@ class CabinetControl(object):
         """Switches cabinet off.
         """
         self.log.error('can not turn off cabinet without relay board')
-        raise PS.PS_Exception('cabinet without relay board are always on.')
+        raise PS.PS_Exception('cabinet without relay boards are always on.')
 
     def update_state(self):
         self.error_code = self.checked_command(0, 'STB/')
