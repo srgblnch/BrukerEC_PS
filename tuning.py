@@ -71,9 +71,6 @@ class Tuner(object):
         index = rp.index+slave_index
         @PS.AttrExc
         def read_f(inst, attr):
-            if not inst.cab.all_initialized():
-                attr.set_quality(PS.AQ_INVALID)
-                return
             inst.obj_vdq(rp.cobj, index).set_attr(attr)
 
         @PS.AttrExc

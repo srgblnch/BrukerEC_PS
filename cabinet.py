@@ -11,6 +11,7 @@ import logging
 from copy import copy
 import traceback
 from collections import deque
+from errno import ECONNREFUSED
 
 # TANGO imports
 from PyTango import Except, DevFailed, DevState
@@ -47,9 +48,8 @@ CAB_READY = 'cabinet ready'
 
 # how often commands shall be attempted
 COMMAND_RETRY = 3
-# this tries to gurantee that mass downloads AND setting succeed anyway
-# COMMAND_RETRY = 20
 
+SOCKET_CONNECTION_REFUSED = 111
 
 def instance():
     global _CAB
@@ -137,7 +137,6 @@ class CabinetControl(object):
     # status and which relay board to use for switching on dipole & quad
     # the default (None) indicates that there is no relay board in the system
     # and the functionality is provided by the relay board
-    cab_port = None
     errors = None
     # when CAN bus hangs this flag will be true
     # reset it by explicit assignment or by calling update_state
@@ -158,11 +157,13 @@ class CabinetControl(object):
         # only true when the cabinet is ON
 
         self.desc = 'generic'
-        self.stat = DevState.UNKNOWN, "unknown"
+        self.stat = None
+        self.command_queue = deque()
+
+        # counters
         self.init_counter = 0
         self.command_canbus_timeout = 0
         self.command_timeout = 0
-        self.command_queue = deque()
 
     is_connected = property(lambda self: self.comm.is_connected)
 
@@ -200,18 +201,20 @@ class CabinetControl(object):
             return self.reconnect_core()
 
         except socket.error, err:
-            if reap and err.errno==111:
+            if reap and err.errno==ECONNREFUSED:
                 self.restart_bsw_tcp()
                 return False
             else:
                 raise
+        except Exception, exc:
+            traceback.print_exc()
+            raise
 
 
     def reconnect_core(self):
         '''Ensures that a connection with 'host' (if configured) is etablished
            Raising an exception if fails
         '''
-        was_connected = self.is_connected
         self.comm.reconnect()
 
         # Determines the type of the cabinet used.
@@ -238,14 +241,14 @@ class CabinetControl(object):
         self.__class__, self.desc = CAB_CT[pst]
         return self.is_connected
 
-    def get_alarms(self, mask=0):
-        word = (self.error_code & ~mask)
+    def get_alarms(self):
         if self.errors is None:
             return [ 'type of cabinet not yet detected']
+        word = (self.error_code & ~self.mask)
         return bit_filter_msg(word, self.errors)
 
     def reset_interlocks(self):
-        raise Exception('not implemented')
+        self.log.debug('reset_interlocks stub')
 
     def reset_interlocks_p(self, port):
         self.can_hang[port] = False
@@ -253,7 +256,9 @@ class CabinetControl(object):
             self.command_seq(port, 'RST=0')
 
     def check_hung(self, port, force):
-        if self.can_hang.get(port, False) and not force:
+        if port is None:
+            return False
+        elif self.can_hang.get(port, False) and not force:
             raise CanBusTimeout('CAN bus is hung, or busy')
 
     def command_seq(self, port, *cmd_list, **kwargs):
@@ -268,20 +273,20 @@ class CabinetControl(object):
             r = []
             try:
                 for cmd in cmd_list:
-                    r.append(self._command(cmd, force=force))
+                    r.append(self._command(cmd))
             except CanBusTimeout:
                 self.can_hang[port] = True
                 raise
             return r
 
     def command_q(self, STAT, port, *cmd_list, **kwargs):
-        print 'queuing command', port, cmd_list, kwargs
         self.command_queue.append( (STAT, port, cmd_list, kwargs) )
 
     def checked_command(self, port, cmd, **kwargs):
         timeout = None
         with self.lck:
             for x in xrange(COMMAND_RETRY):
+                nop(x)
                 try:
                     self.switch_port(port)
                     response = self._command(cmd, **kwargs)
@@ -303,14 +308,14 @@ class CabinetControl(object):
         with self.lck:
             self.switch_port(port)
             try:
-                r = self._command(cmd, force=force)
+                r = self._command(cmd)
                 self.can_hang[port] = False
             except CanBusTimeout:
                 self.can_hang[port] = True
                 raise
             return r
 
-    def _command(self, cmd, force=False):
+    def _command(self, cmd):
         if not self.comm.is_connected:
             traceback.print_exc()
             raise PS.PS_Exception('control %s not connected' % self.comm.hopo)
@@ -323,7 +328,9 @@ class CabinetControl(object):
         for r in range(COMMAND_RETRY):
             COM.write(txt)
             response = COM.readline()
+#            traceback.print_stack()
             if not response:
+                print 'no response'
                 self.command_timeout += 1
                 self.log.debug("timed out reading")
                 msg = "timed out waiting %s for responding to %s" % \
@@ -350,6 +357,7 @@ class CabinetControl(object):
         return payload
 
     def switch_port(self, port):
+        if port is None: return
         port = str(port)
         if port!=self.active_port:
             self._command("PRT="+port)
@@ -450,17 +458,22 @@ class STB_Cabinet(CabinetControl):
     def reset_interlocks(self):
         self.reset_interlocks_p(0)
 
+    mask = 0x18
+
+
 class DC_Cabinet(STB_Cabinet):
     use_waveforms = False
 
 class Wave_Cabinet(STB_Cabinet):
     use_waveforms = True
+    mask = 0x00
     def reset_interlocks(self):
         self.reset_interlocks_p(RELAY_PORT)
 
+class Sex_Cabinet(Wave_Cabinet):
+    mask = 0x08
+
 class Big_Cabinet(Wave_Cabinet):
-    POWER_ON_STATE = 0x06,
-    POWER_OFF_STATE = 0x01,0x03
 
     MACHINE_STAT = None # abstract
 
@@ -484,7 +497,6 @@ class Big_Cabinet(Wave_Cabinet):
     'extern 3',
     'extern 4'
     ]
-
 
     def update_state(self):
         self.error_code = self.checked_command(RELAY_PORT, 'STB/')
@@ -567,13 +579,11 @@ class Quad_Cabinet(Big_Cabinet):
         (DS.MOVING, 'stopping QH02'),
     ]
 
-
 CAN_BUS_TIMEOUT_CODE = 0x800000
 class CanBusTimeout(PS.PS_Exception):
     '''Exception thrown when CAN bus timesout
     '''
     pass
-
 
 def check(port, response, hint=''):
     '''Checks wether timeout occured and that channel in reply matches with
@@ -609,7 +619,7 @@ CAB_CT = {
     2 : ( DC_Cabinet, 'linac transferline'),
     3 : ( Quad_Cabinet, 'quadrupole' ),
     6 : ( DC_Cabinet, 'booster transferline'),
-    7 : ( Wave_Cabinet, 'sextupole' ),
+    7 : ( Sex_Cabinet, 'sextupole' ),
     8 : ( Bend_Cabinet, 'dipole' )
 }
 

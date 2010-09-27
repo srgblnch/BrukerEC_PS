@@ -23,12 +23,12 @@
 from __future__ import print_function
 
 META = """
-    $URL$
-    $LastChangedBy$
-    $Date$
-    $Rev$
-    Author: Lothar Krause <lkrause@cells.es>
-    License: GPL3+
+Author: Lothar Krause <lkrause@cells.es>
+License: GPL3+
+$URL$
+$LastChangedBy$
+$Date$
+$Rev$
 """
 # comment for testing merge feature
 # python standard imports
@@ -41,6 +41,7 @@ from pprint import pformat, pprint
 from copy import deepcopy
 from time import time, sleep
 import logging
+from errno import ECONNREFUSED
 
 # TANGO imports
 import PyTango as Tg
@@ -226,8 +227,6 @@ class BrukerEC_PS(PS.PowerSupply):
         self.STAT.set_stat2(Tg.DevState.UNKNOWN, 'not yet connected')
         self.ERR_CODE = None
 
-    use_waveforms = property(lambda self: self.cab.use_waveforms)
-
     # Basic Utilities
     def query(self, aname):
         '''Executes query to hardware for attribute 'aname' by calling the
@@ -368,7 +367,7 @@ class BrukerEC_PS(PS.PowerSupply):
         # cabinet type is detected when that cabinet device connects
         # the socket and the Version query above ensure that this has
         # happened
-        if self.use_waveforms:
+        if self.cab.use_waveforms:
             self.tuner = tuning.Tuner(self, pst)
 
         # after this line the pstype is considered fully detected
@@ -515,7 +514,7 @@ class BrukerEC_PS(PS.PowerSupply):
         '''Updates the state of device.
         '''
         try:
-            self.cab.process_command_queue()
+            self._up_start_t = time()
 
             # performs wave up/down-loads first, if any
             self.load_waveform()
@@ -526,11 +525,9 @@ class BrukerEC_PS(PS.PowerSupply):
                 else:
                     self.STAT.COMM_ERROR('no connection to control unit %s' % cab.host)
                 return
-            self._up_start_t = time()
 
             # detects power supply specific settings
             t = self.pstype()
-
 
             # status update
             # disabled this check because it causes problems whe
@@ -560,7 +557,7 @@ class BrukerEC_PS(PS.PowerSupply):
             Iref = up('CurrentSetpoint',3, dflt=NAN)
 
             # needed to have responsive bend interface
-            if self.use_waveforms:
+            if self.cab.use_waveforms:
                 up('WaveOffset', 4, dflt=NAN)
 
             # updates Voltage only in DC mode
@@ -590,12 +587,6 @@ class BrukerEC_PS(PS.PowerSupply):
             # faults are sticky and must be fixed by ResetInterlocks
             if self.get_state()==DevState.FAULT:
                 pass
-
-            elif not self.wavl.is_connected:
-                msg = self.wavl.sok._exc_msg
-                if not msg:
-                    msg = 'waveform loading not connected'
-                self.STAT.ALARM(msg)
 
             # any other error will result in alarm state
             elif self.alarms:
@@ -635,6 +626,7 @@ class BrukerEC_PS(PS.PowerSupply):
             self.STAT.COMM_FAULT(m)
 
         except PS.PS_Exception, exc:
+            traceback.print_exc()
             self._alarm(str(exc))
 
         finally:
@@ -657,7 +649,7 @@ class BrukerEC_PS(PS.PowerSupply):
     @PS.CommandExc
     def Off(self):
         try:
-            if self.use_waveforms and self.value('WaveGeneration'):
+            if self.cab.use_waveforms and self.value('WaveGeneration'):
                 self._write('TriggerMask',0)
         except Exception:
                 self.log.error('while switching wave cabinet off', exc_info=1)
@@ -678,6 +670,7 @@ class BrukerEC_PS(PS.PowerSupply):
         PS.PowerSupply.ResetInterlocks(self)
         self.__errors = self.faults+self.alarms
         self.cab.reconnect(reap=True)
+        self.wavl.reconnect_reap()
         self.cab.can_hang[self.Port] = False
         self.cab.reset_interlocks()
         self.cmd('RST=0')
@@ -803,12 +796,6 @@ class BrukerEC_PS(PS.PowerSupply):
     @PS.AttrExc
     def read_Current(self, attr):
         self.vdq('Current').set_attr(attr)
-
-    def query_wr(self):
-        if self.use_waveforms:
-            return self.query_ec('WOF', float)
-        else:
-            return VDQ(0.0, q=AQ_INVALID)
 
     @PS.AttrExc
     def read_CurrentSetpoint(self, attr):
@@ -1110,7 +1097,7 @@ class BrukerEC_PS(PS.PowerSupply):
         return VDQ(duration, q=AQ_VALID)
 
     def query_WaveGeneration(self):
-        if self.use_waveforms:
+        if self.cab.use_waveforms:
             return self.query_ec('WMO', lambda x: bool(int(x)))
         else:
             return VDQ(False, q=AQ_VALID)
@@ -1376,13 +1363,17 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         self.cab = cabinet.instance()
         self.cab.connect(self.IpAddress)
         self.cab.restart_bsw_tcp = self.restart_bsw_tcp
-        self.cab.reconnect()
+        try:
+            self.cab.reconnect()
+        except socket.error, err:
+            self.log.warn(err)
         if not self.cab.is_connected:
             self.log.error('not being connected %s',self.cab.comm.hopo)
 
         self.wavl = wavl.instance()
         self.wavl.log = logging.getLogger(self.log.name+'.wavl')
         self.wavl.connect(self.IpAddress)
+        self.wavl.reconnect_reap = self.wavl_reconnect_reap
 
         # for the cabinet instead of cache["XY"] _XY is used.
         self._ErrorCode = VDQ(0, q=AQ_INVALID)
@@ -1426,6 +1417,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
     @PS.CommandExc
     def ResetInterlocks(self):
         PS.PowerSupply.ResetInterlocks(self)
+        self.wavl.reconnect_reap()
         self.cab.reconnect(reap=True)
         self.cab.command_seq(self.Port, 'RST=0')
         self.cab.update_state()
@@ -1436,11 +1428,11 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         self.STAT.set_stat2(Tg.DevState.UNKNOWN, 'restarting bsw server...')
         try:
             self.cab.telnet((
-                "kill `ps ax | grep bsw_tcp  | cut -b-6`",
+                "kill `ps | grep bsw_tcp_repeater2  | cut -b-6`",
                 "start_repeater.sh &"
               ))
         except Exception:
-                self.log.error('while trying to restart bsw server', exc_info=1)
+            self.log.error('while trying to restart bsw server', exc_info=1)
 
     @PS.CommandExc
     def UpdateState(self):
@@ -1523,6 +1515,24 @@ class BrukerEC_Cabinet(PS.PowerSupply):
     @PS.CommandExc
     def Sync(self):
         self.cmd_seq('SYNC')
+
+    def wavl_reconnect_reap(self):
+        '''Tries to reconnect to waveform loader, if this fails
+           because of connection refused it will try to restart the
+           bsw_tcp_repeater.
+        '''
+        if not self.cab.use_waveforms:
+            return
+        try:
+            self.wavl.reconnect()
+        except socket.error, err:
+            if err.errno==ECONNREFUSED:
+                self.restart_bsw_tcp()
+            else:
+                self.log.exception('wave reconnect reap')
+            return False
+        except Exception:
+            self.log.exception('wave reconnect reap')
 
 
 class BrukerEC_Cabinet_Class(PS.PowerSupply_Class):

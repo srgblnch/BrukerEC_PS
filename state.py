@@ -20,10 +20,9 @@ PSSL = PS.StateLogic
 
 class Module(object):
 
-    def __init__(self, name, err, mask=0):
+    def __init__(self, name, err):
         self.name = name
         self.errors = err
-        self.mask = mask
 
     def __str__(self):
         return '%s' % self.name
@@ -64,7 +63,6 @@ class PSType(object):
         self.states_switch_off = kwargs.get('swoff', (11, 14, 15) )
         self.states_switch_on = kwargs.get('swon', (7,8,9 ) )
         self.states_standby = kwargs.get('standby', () )
-        self.mask_cab = kwargs.get('mask_cab', 0)
         self.use_waveforms = True
 
     def update_xi(self, msg_list):
@@ -274,13 +272,13 @@ PSTYPE_BEND = PSType_Big('bending',
   MOD_BM, MOD_BUCK1, MOD_BS, MOD_BUCK2, Isafe=470)
 
 # sextupole type
-PSTYPE_SEX = PSType('sextupole', MOD_C, XI=xrange(12, 16) , mask_cab=0x08)
+PSTYPE_SEX = PSType('sextupole', MOD_C, XI=xrange(12, 16))
 PSTYPE_SEX.REG_PARAM = copy.copy(PSType.REG_PARAM)
 del PSTYPE_SEX.REG_PARAM['BuckV']
 
 # maps software types to PSTypes
 REG2PSTYPE = {
-    1 : PSType('corrector', MOD_C, XI=xrange(12, 16), mask_cab=0x18), # correctors and quadrupoles?
+    1 : PSType('corrector', MOD_C, XI=xrange(12, 16)), # correctors and quadrupoles?
     2 : PSType('LT bend', MOD_C, XI=xrange(12, 16)), # bending magnets of the LT cabinet
     3 : None, # is a quadrupole but could have 2 or 4 submodules, so further work required
     4 : None, #< buck for ???
