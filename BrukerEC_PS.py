@@ -33,15 +33,13 @@ $Rev$
 # comment for testing merge feature
 # python standard imports
 import sys
-import errno
 import socket
 import traceback
 from types import StringType
 from pprint import pformat, pprint
 from copy import deepcopy
 from time import time, sleep
-import logging
-from errno import ECONNREFUSED
+from errno import ECONNREFUSED, EHOSTUNREACH
 
 # TANGO imports
 import PyTango as Tg
@@ -438,7 +436,7 @@ class BrukerEC_PS(PS.PowerSupply):
 
         except socket.error, exc:
             e = exc.args[0]
-            if e==errno.EHOSTUNREACH:
+            if e==EHOSTUNREACH:
                 msg = 'control unit %r offline' % self.cab.host
             else:
                 msg = 'control unit %r: %s (%d)' % (self.cab.host, exc.args[1], e)
@@ -970,7 +968,7 @@ class BrukerEC_PS(PS.PowerSupply):
         elif new_value is None:
             try:
                 vdq = self.vdq(aname)
-            except PS.PS_Exception, exc:
+            except PS.PS_Exception:
                 self.log.warn('push_changing(%s)',aname, exc_info=1)
                 return
         else:
@@ -1355,6 +1353,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
 
     def init_device(self, cl=None, name=None):
         PS.PowerSupply.init_device(self, cl, name)
+        PS.TangoLogger.INSTANCE[None] = self.log
 
         if not self.IpAddress:
             msg = 'device property IpAddress must be configured'
@@ -1362,6 +1361,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
 
         self.cab = cabinet.instance()
         self.cab.connect(self.IpAddress)
+        self.restart_bsw_tcp_last_attempt_t = 0
         self.cab.restart_bsw_tcp = self.restart_bsw_tcp
         try:
             self.cab.reconnect()
@@ -1371,7 +1371,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
             self.log.error('not being connected %s',self.cab.comm.hopo)
 
         self.wavl = wavl.instance()
-        self.wavl.log = logging.getLogger(self.log.name+'.wavl')
+        self.wavl.log = self.log
         self.wavl.connect(self.IpAddress)
         self.wavl.reconnect_reap = self.wavl_reconnect_reap
 
@@ -1425,12 +1425,18 @@ class BrukerEC_Cabinet(PS.PowerSupply):
     def restart_bsw_tcp(self):
         '''restarts bsw tcp repeater.
         '''
+        # assures that between two restart attempts elapses more than 10 seconds
+        if self.restart_bsw_tcp_last_attempt_t+10.0 >= time():
+            return
+        else:
+            self.restart_bsw_tcp_last_attempt_t = time()
         self.STAT.set_stat2(Tg.DevState.UNKNOWN, 'restarting bsw server...')
         try:
             self.cab.telnet((
                 "kill `ps | grep bsw_tcp_repeater2  | cut -b-6`",
                 "start_repeater.sh &"
               ))
+            return True
         except Exception:
             self.log.error('while trying to restart bsw server', exc_info=1)
 
