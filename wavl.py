@@ -32,7 +32,6 @@ from __future__ import with_statement
 from time import sleep, time
 from threading import Lock, Thread
 from collections import deque
-import logging
 from types import NoneType
 import numpy as numpy
 from zlib import crc32
@@ -144,13 +143,12 @@ class WaveformLoader(object):
     '''
 
     active_load = None
-    log_name = 'wavl'
     busy = None
 
     def __init__(self):
         global _WAVL
         _WAVL = self
-        self.log = logging.getLogger(self.log_name)
+        self.log = PS.getLogger('wavl')
         self.sok = PU.FriendlySocket()
         self.sok.reconnect_delay = 20
         self.sok.connect_timeout = 2.0

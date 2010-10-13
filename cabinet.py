@@ -71,7 +71,7 @@ class UpdateThread(Thread):
         self.update_t = None
         # when this semaphore is equal to the number
         # of registered callbacks, the DS initialization phase is finished
-        self.log = logging.getLogger('cab.up')
+        self.log = PS.getLogger('cab.up')
 
     def run(self):
         while self.running:
@@ -132,6 +132,7 @@ class CabinetControl(object):
     port = None #< port of the cabinet controller / relay board (used for resetting interlocks)
     type_hint = 0
     use_waveforms = None #< using None to indicate UNKNOWN
+    mask = 0x00
 
     #< indicates which 'port' of the PS should be used to reading cabinet-wide
     # status and which relay board to use for switching on dipole & quad
@@ -142,14 +143,12 @@ class CabinetControl(object):
     # reset it by explicit assignment or by calling update_state
 
     def __init__(self):
-        self.log = logging.getLogger(self.__class__.__name__)
         self.can_hang = {}
         self.active_port = None
         self.comm = FriendlySocket()
         self.comm.read_timeout = 3.0 # doubled from 1.5
         # locks link to Ethernet bridge
         self.lck = RLock()
-        self.log = logging.getLogger('cab')
         self.rem_vdq = factory.VDQ(False)
         self.updater = UpdateThread()
 
@@ -157,13 +156,14 @@ class CabinetControl(object):
         # only true when the cabinet is ON
 
         self.desc = 'generic'
-        self.stat = None
+        self.stat = (DevState.UNKNOWN, 'unknown')
         self.command_queue = deque()
 
         # counters
         self.init_counter = 0
         self.command_canbus_timeout = 0
         self.command_timeout = 0
+        self.log = PS.getLogger('can')
 
     is_connected = property(lambda self: self.comm.is_connected)
 
@@ -206,7 +206,7 @@ class CabinetControl(object):
                 return False
             else:
                 raise
-        except Exception, exc:
+        except Exception:
             traceback.print_exc()
             raise
 
@@ -466,7 +466,6 @@ class DC_Cabinet(STB_Cabinet):
 
 class Wave_Cabinet(STB_Cabinet):
     use_waveforms = True
-    mask = 0x00
     def reset_interlocks(self):
         self.reset_interlocks_p(RELAY_PORT)
 
