@@ -32,7 +32,6 @@ $Rev$
 """
 # comment for testing merge feature
 # python standard imports
-import sys
 import socket
 import traceback
 from types import StringType
@@ -196,7 +195,6 @@ class BrukerEC_PS(PS.PowerSupply):
 
     def init_device(self, cl=None, name=None):
         PS.PowerSupply.init_device(self, cl, name)
-
 
         # sets up cache of VDQ objects for safely manipulating and accessing
         # read values from within the device itself
@@ -458,7 +456,7 @@ class BrukerEC_PS(PS.PowerSupply):
         if load is None: return
         try:
             # invalidates previous Waveform read value
-            self.push_changing('Waveform' , [])
+            self.push_vdq('Waveform' , [], q=AQ_CHANGING)
             msg = load.BASE_MSG+'ing...'
             self.push_vdq('WaveStatus', msg, q=AQ_CHANGING)
             self.STAT.INIT(msg)
@@ -579,7 +577,7 @@ class BrukerEC_PS(PS.PowerSupply):
                 else:
                     self.alarms += mod_msg
             self.update_attr('ErrorCode')
-            self.alarms += self.cab.get_alarms(t.mask_cab)
+            self.alarms += self.cab.get_alarms()
 
             # decides which state should be used
             # faults are sticky and must be fixed by ResetInterlocks
@@ -683,8 +681,8 @@ class BrukerEC_PS(PS.PowerSupply):
             del self.cache['Waveform']
         n = self.update_attr('WaveLength')
         ul = self.wave_load= wavl.Upload(self.Port, n)
-        self.push_changing('WaveLength')
-        self.push_changing('WaveDuration')
+        self.push_vdq('WaveLength', q=AQ_CHANGING)
+        self.push_vdq('WaveDuration', q=AQ_CHANGING)
         self.push_vdq('WaveStatus', ul.BASE_MSG+' pending', q=AQ_CHANGING)
 
     @PS.CommandExc
@@ -959,27 +957,6 @@ class BrukerEC_PS(PS.PowerSupply):
         ix = tuple( dt*r for r in xrange(n) )
         return ix
 
-
-    def push_changing(self, aname, new_value=None):
-        '''Pushes a new change event for aname with quality == CHANGING
-        '''
-        if aname in self.cache:
-            vdq = self.vdq(aname)
-        elif new_value is None:
-            try:
-                vdq = self.vdq(aname)
-            except PS.PS_Exception:
-                self.log.warn('push_changing(%s)',aname, exc_info=1)
-                return
-        else:
-            vdq = VDQ(new_value)
-
-        if not new_value is None:
-            vdq.value = new_value
-        vdq.quality = AQ_CHANGING
-        self.push_change_event(aname, *vdq.triple)
-        return vdq
-
     @PS.AttrExc
     def read_Errors(self, attr):
         attr.set_value(self.__errors)
@@ -1006,11 +983,11 @@ class BrukerEC_PS(PS.PowerSupply):
         ix = self.get_regulation_x(n=len(waveform))
 
         self.cache['WaveX'] = VDQ(ix, q=AQ_CHANGING)
-        self.cache['WaveY'] = self.push_changing('Waveform', waveform)
-        self.push_changing('WaveLength')
-        self.push_changing('WaveDuration')
-        self.push_changing('WaveStatus', dl.BASE_MSG+' pending')
-        self.push_changing('WaveId')
+        self.cache['WaveY'] = self.push_vdq('Waveform', waveform, q=AQ_CHANGING)
+        self.push_vdq('WaveLength', q=AQ_CHANGING)
+        self.push_vdq('WaveDuration', q=AQ_CHANGING)
+        self.push_vdq('WaveStatus', dl.BASE_MSG+' pending', q=AQ_CHANGING)
+        self.push_vdq('WaveId', q=AQ_CHANGING)
         self.push_vdq('WaveName', v=self.value('WaveName',''), q=AQ_ALARM)
 
     def ramp_off(self):
@@ -1353,13 +1330,13 @@ class BrukerEC_Cabinet(PS.PowerSupply):
 
     def init_device(self, cl=None, name=None):
         PS.PowerSupply.init_device(self, cl, name)
-        PS.TangoLogger.INSTANCE[None] = self.log
 
         if not self.IpAddress:
             msg = 'device property IpAddress must be configured'
             raise Exception(msg)
 
         self.cab = cabinet.instance()
+        self.cab.log = self.log
         self.cab.connect(self.IpAddress)
         self.restart_bsw_tcp_last_attempt_t = 0
         self.cab.restart_bsw_tcp = self.restart_bsw_tcp

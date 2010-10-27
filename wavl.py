@@ -148,7 +148,7 @@ class WaveformLoader(object):
     def __init__(self):
         global _WAVL
         _WAVL = self
-        self.log = PS.getLogger('wavl')
+        self.log = None
         self.sok = PU.FriendlySocket()
         self.sok.reconnect_delay = 20
         self.sok.connect_timeout = 2.0

@@ -71,14 +71,14 @@ class UpdateThread(Thread):
         self.update_t = None
         # when this semaphore is equal to the number
         # of registered callbacks, the DS initialization phase is finished
-        self.log = PS.getLogger('cab.up')
+        self.log = None
 
     def run(self):
         while self.running:
             self.cycle += 1
             self.busy.wait()
             if not self.running: return 1
-            self.log.debug('starting update cycle %d',self.cycle)
+            # self.log.debug('starting update cycle %d',self.cycle)
             start_t = time()
             for fun in self.register:
                     if not self.running: return 2
@@ -132,6 +132,7 @@ class CabinetControl(object):
     port = None #< port of the cabinet controller / relay board (used for resetting interlocks)
     type_hint = 0
     use_waveforms = None #< using None to indicate UNKNOWN
+    # which alarm bits shall be used
     mask = 0x00
 
     #< indicates which 'port' of the PS should be used to reading cabinet-wide
@@ -146,7 +147,7 @@ class CabinetControl(object):
         self.can_hang = {}
         self.active_port = None
         self.comm = FriendlySocket()
-        self.comm.read_timeout = 3.0 # doubled from 1.5
+        self.comm.read_timeout = 2.0
         # locks link to Ethernet bridge
         self.lck = RLock()
         self.rem_vdq = factory.VDQ(False)
@@ -163,7 +164,13 @@ class CabinetControl(object):
         self.init_counter = 0
         self.command_canbus_timeout = 0
         self.command_timeout = 0
-        self.log = PS.getLogger('can')
+        self.__log = None
+
+    def set_logger(self, l):
+        self.__log = l
+        self.updater.log = l
+
+    log = property( lambda self: self.__log, set_logger )
 
     is_connected = property(lambda self: self.comm.is_connected)
 
@@ -330,7 +337,6 @@ class CabinetControl(object):
             response = COM.readline()
 #            traceback.print_stack()
             if not response:
-                print 'no response'
                 self.command_timeout += 1
                 self.log.debug("timed out reading")
                 msg = "timed out waiting %s for responding to %s" % \
