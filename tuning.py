@@ -19,20 +19,12 @@ class Tuner(object):
 
         @PS.AttrExc
         def read_RegulationTuneable(inst, attr):
-            if inst.tuner:
-                value = attr.get_write_value()
-                attr.set_value(value)
-            else:
-                attr.set_quality(PS.AQ_INVALID)
+            attr.set_value(self.writeable)
 
         @PS.AttrExc
         def write_RegulationTuneable(inst, attr):
-            value = attr.get_write_value()
-            inst.push_change_event('RegulationTuneable', value)
-            if inst.tuner:
-                inst.tuner.writeable = value
-            else:
-                raise PS.PS_Exception('could not write attribute RegulationTuneable because initialization not finished.')
+            self.writeable = attr.get_write_value()
+            inst.push_change_event('RegulationTuneable', self.writeable)
 
         attr = Tg.Attr('RegulationTuneable', Tg.DevBoolean, Tg.READ_WRITE)
         self.impl.add_attribute(attr,
@@ -75,7 +67,7 @@ class Tuner(object):
 
         @PS.AttrExc
         def write_f(inst, wattr):
-            if not self.RegulationTuneable.get_write_value():
+            if not self.writeable:
                 raise PS.PS_Exception('tuning regulation parameters disabled')
             write_value = wattr.get_write_value()
             inst.obj_set(rp.cobj, index, repr(write_value))
