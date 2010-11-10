@@ -143,7 +143,7 @@ E_IGBT = 'IGBT fault'
 ERRORS_CORR = [
     ## Error byte, LSB, 0x00 ... 0x08
     E_EARTH,
-    E_EEPROM+' or DC filter overvoltage',
+    'DC filter overvoltage (OR {0})'.format(E_EEPROM),
     E_LOAD,
     E_ADC,
     'DC on fault',
@@ -307,7 +307,7 @@ class StateLogic(PS.StateLogic):
 
     FAULT = PSSL.FAULT
     MACHINE_STAT = {
-        0x00: (PSSL.ALARM, 'synchronization required' ),
+        0x00: (PSSL.ALARM, 'synchronization required 0' ),
         0x01: (PSSL.ALARM, 'synchronization required 1' ),
         0x02: (PSSL.ALARM, 'awaiting synchronization trigger'),
         0x03: (PSSL.OFF,),
