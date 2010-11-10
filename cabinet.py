@@ -335,7 +335,7 @@ class CabinetControl(object):
         for r in range(COMMAND_RETRY):
             COM.write(txt)
             response = COM.readline()
-#            traceback.print_stack()
+            # indicates TCP socket timeout
             if not response:
                 self.command_timeout += 1
                 self.log.debug("timed out reading")
@@ -356,7 +356,7 @@ class CabinetControl(object):
         payload = response.strip()
         if payload.startswith("E"):
             if payload in ERROR_RESPONSE:
-                msg = ERROR_RESPONSE[payload] % dict(cmd=cmd,port=self.active_port) + " ("+payload+")"
+                msg = ERROR_RESPONSE[payload] % dict(cmd=cmd, port=self.active_port) + " ("+payload+")"
             else:
                 msg = payload
             raise PS.PS_Exception(msg)
@@ -414,10 +414,10 @@ class CabinetControl(object):
         '''Executes all commands in command queue.
         '''
         while len(self.command_queue) > 0:
-            print 'processing command queue', len(self.command_queue)
             try:
                 STAT,port,cmd_list,kwargs = self.command_queue.popleft()
-                print 'executing queued command %d %s %s' % (port,cmd_list,kwargs)
+                msg = 'executing queued command {0} {1} {2}'.format(port,cmd_list,kwargs)
+                self.log.info(msg)
                 self.command_seq(port, *cmd_list, **kwargs)
             except Exception, exc:
                 msg = 'processing queued command'
@@ -480,6 +480,7 @@ class Sex_Cabinet(Wave_Cabinet):
 
 class Big_Cabinet(Wave_Cabinet):
 
+    mask = 0
     MACHINE_STAT = None # abstract
 
     errors = [
