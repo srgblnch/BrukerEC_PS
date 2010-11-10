@@ -1,0 +1,28 @@
+1.11
+* fixes problem preventing regulation parameters to be written even when
+  RegulationTuneable was set to True
+* ResetInterlocks: limits calls to bsw_tcp_repeater2 to at most once every 10 s
+* changes command read timeout to 2 seconds
+* replaces push_changing by push_vdq
+* PSType.mask_cab replaced by Cabinet.mask
+* removed all_initialized check
+* eliminates bogus ControlTrace at init when cab.stat was None
+* fixes some pychecker warnings related to imports
+* using BUSY for waveform uploads and downloads
+
+1.10
+* queueing writes while loading waveforms
+* fixes telnet commands related hangs
+* improved of connection refused errors (cPCI being abruptly shutdown)
+* removed all_initialized check
+
+1.9
+* improved synchronization feature added to BrukerBend_PS.py
+* error messages for slave and buck power supply modules
+
+Communication
+* improved handling of control units going offline, and coming back
+* retry can bus commands upto three times
+* can bus errors will only block the originating power supply, so others will
+  remain usable
+* wave up- and downloads will not cause can bus errors anymore
