@@ -459,7 +459,7 @@ class BrukerEC_PS(PS.PowerSupply):
             self.push_vdq('Waveform' , [], q=AQ_CHANGING)
             msg = load.BASE_MSG+'ing...'
             self.push_vdq('WaveStatus', msg, q=AQ_CHANGING)
-            self.STAT.INIT(msg)
+            self.STAT.BUSY(msg)
             start_t = time()
             load.run(self, self.wavl)
             t0 = time()
@@ -483,7 +483,7 @@ class BrukerEC_PS(PS.PowerSupply):
             self.push_vdq('WaveId', wavehash, d=t0, q=AQ_VALID)
             msg = load.BASE_MSG+' finished %.2fs' % diff_t
             self.push_vdq('WaveStatus', msg, q=AQ_VALID)
-            self.STAT.INIT(msg)
+            self.STAT.BUSY(msg)
 
         except PS.PS_Exception, exc:
             msg = load.BASE_MSG+' error: '+str(exc)
