@@ -9,6 +9,7 @@
 * eliminates bogus ControlTrace at init when cab.stat was None
 * fixes some pychecker warnings related to imports
 * using BUSY for waveform uploads and downloads
+* makes communication error unsticky
 
 1.10
 * queueing writes while loading waveforms

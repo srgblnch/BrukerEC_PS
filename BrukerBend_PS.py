@@ -594,17 +594,18 @@ class BrukerBend_PS(PS.PowerSupply):
                 self.update_switch_status('off', fin1, fin2)
 
         except Tg.DevFailed, df:
-            self._alarm(df[-1].desc)
-            raise
+            self.STAT.COMM_ERROR('device failed'+df[-1].desc)
 
         except Exception, exc:
             self._alarm(exc)
             self.switching = SWITCH_NEUTRAL
             raise
 
-        finally:
+        try:
             if not self.switching in (SWITCH_ON, SWITCH_OFF):
                 self.update_neutral()
+        except Exception:
+                traceback.print_exc()
 
     @PS.CommandExc
     def PushAttributes(self):
@@ -629,14 +630,27 @@ class BrukerBend_PS(PS.PowerSupply):
                 self.set_status('switching %s' % switch)
 
 
+    def get_stat2(self, dev):
+        # first new state is determined
+        try:
+            e = dev.command_inout('State')
+            us = dev.Status()
+        except Tg.DevFailed, df:
+            err = df[0]
+            e = Tg.DevState.ALARM
+            us = 'communication error: ' + err.desc.split('\n')[0]
+            self.log.debug(str(df))
+            self.delay_update()
+
+        return e,us
+
     def update_neutral(self):
         state = DevState.FAULT
         try:
             # defines two shortcuts to improve readability later
             bend1, bend2 = self.bend1, self.bend2
-
-            # first new state is determined
-            b1_state, b2_state = bend1.State(), bend2.State()
+            b1_state, b1_status = self.get_stat2(bend1)
+            b2_state, b2_status = self.get_stat2(bend2)
 
             # if States are equal it is used as-is
             if b1_state == b2_state:
@@ -654,8 +668,7 @@ class BrukerBend_PS(PS.PowerSupply):
             else:
                 state = DevState.ALARM
 
-            b1_status = bend1.Status()
-            b2_status = bend2.Status()
+
 
             if b1_status==b2_status:
                 status = b1_status
@@ -668,19 +681,22 @@ class BrukerBend_PS(PS.PowerSupply):
                         status = '%s' % b1l
                     else:
                         status = '%s / %s' % (b1l, b2l)
+                    FA = Tg.DevState.FAULT, Tg.DevState.ALARM
+                    if b1_state in (FA) or b2_state in FA:
+                        status += ': check errors'
+
 
 
         except Tg.CommunicationFailed, commfail:
-                status = 'communication failed'
-                self.log.debug(str(commfail))
-                self.delay_update()
+            status = 'communication failed'
+            self.log.debug(str(commfail))
+            self.delay_update()
 
-        except Tg.DevFailed, df:
-                status = 'device failure'
-                self.log.debug(str(df))
-                self.delay_update()
+
 
         except Exception, e:
+            traceback.print_exc()
+
             status = str(e)
             self.delay_update()
 
@@ -872,16 +888,26 @@ class BrukerBend_PS(PS.PowerSupply):
         else:
             self.sync_status.ss_state = SS_CANCEL_THREAD
 
+
+    def get_errors(self, bend):
+        '''returns errors for bend device.
+           if reading fails this will be the error'.
+           Always returns an iterable object.
+        '''
+        try:
+            BE1 = bend.read_attribute('Errors').value
+            if BE1 is None:
+                BE1 = [ ]
+        except Tg.DevFailed,df:
+            BE1 = [ df[-1].desc ]
+        return BE1
+
+
     @PS.AttrExc
     def read_Errors(self, attr):
         ls = []
-        BE1 = self.bend1.read_attribute('Errors').value
-        BE2 = self.bend2.read_attribute('Errors').value
-        if BE1 is None:
-            BE1 = []
-
-        if BE2 is None:
-            BE2 = []
+        BE1 = self.get_errors(self.bend1)
+        BE2 = self.get_errors(self.bend2)
 
         for e1 in BE1:
             if e1 not in BE2:

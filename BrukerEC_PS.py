@@ -510,6 +510,9 @@ class BrukerEC_PS(PS.PowerSupply):
         '''Updates the state of device.
         '''
         try:
+            STAT = self.STAT
+            # resets alarms
+            self.alarms.clear()
             self._up_start_t = time()
 
             # performs wave up/down-loads first, if any
@@ -517,9 +520,10 @@ class BrukerEC_PS(PS.PowerSupply):
             cab = self.cab
             if not cab.is_connected:
                 if cab.comm._exc_msg:
-                    self.STAT.COMM_ERROR(self.cab.comm._exc_msg)
+                    STAT.COMM_ERROR(self.cab.comm._exc_msg)
                 else:
-                    self.STAT.COMM_ERROR('no connection to control unit %s' % cab.host)
+                    msg = 'no connection to control unit' + str(cab.host)
+                    STAT.COMM_ERROR(msg)
                 return
 
             # detects power supply specific settings
@@ -530,9 +534,6 @@ class BrukerEC_PS(PS.PowerSupply):
             # starting up DS for a cabinet with hung module
 #            if not self.cab.all_initialized():
 #                return
-
-            # resets alarms
-            self.alarms.clear()
 
             # always updates Current readback and MachineState
             Imeas = self.update_attr('Current')
@@ -566,63 +567,60 @@ class BrukerEC_PS(PS.PowerSupply):
                 Inominal = self.value('CurrentNominal')
                 moving = ps_on and abs(Iref-Imeas) > self.RegulationPrecision
 
-            M = len(t.module)
-            self.ERR_CODE = [None]*M
+            MODULENUM = len(t.module)
+            self.ERR_CODE = [None]*MODULENUM
+            alarms = UniqList()
             for idx,mod in enumerate(t.module):
                 port = self.Port+idx
                 self.ERR_CODE[idx] = code = cab.checked_command(port, 'STA/')
                 mod_msg = bit_filter_msg(code, mod.errors)
-                if M>1:
-                    self.alarms += [ mod.name+' '+ m for m in mod_msg ]
+                if MODULENUM>1:
+                    alarms += [ mod.name+' '+ m for m in mod_msg ]
                 else:
-                    self.alarms += mod_msg
+                    alarms += mod_msg
             self.update_attr('ErrorCode')
-            self.alarms += self.cab.get_alarms()
+            alarms += self.cab.get_alarms()
 
             # decides which state should be used
             # faults are sticky and must be fixed by ResetInterlocks
             if self.get_state()==DevState.FAULT:
                 pass
 
-            # any other error will result in alarm state
-            elif self.alarms:
-                errors = UniqList()
-                errors += self.faults
-                errors += self.alarms
-                self.STAT.ALARMS(errors)
+            # current errors will cause ALARM
+            elif alarms:
+                STAT.ALARMS(alarms)
 
             # check for moving state
             elif moving:
-                self.STAT.CURRENT_ADJUST()
+                STAT.CURRENT_ADJUST()
 
             elif ps_on:
-                self.STAT.ON()
+                STAT.ON()
 
             elif STC in t.states_switch_on:
-                self.STAT.SWITCHING_ON()
+                STAT.SWITCHING_ON()
 
             elif STC in t.states_switch_off:
-                self.STAT.SWITCHING_OFF()
+                STAT.SWITCHING_OFF()
 
             elif cab.stat:
                 te,tus = cab.stat[0:2]
                 if te==Tg.DevState.STANDBY or te==Tg.DevState.ON:
-                    self.STAT.OFF()
+                    STAT.OFF()
 
                 elif te==Tg.DevState.OFF:
-                    self.STAT.OFF(what='cabinet')
+                    STAT.OFF(what='cabinet')
 
                 else:
-                    self.STAT.OFF(extra=tus)
+                    STAT.OFF(extra=tus)
 
             else:
-                self.STAT.OFF()
+                STAT.OFF()
 
         except cabinet.CanBusTimeout, m:
-            self.STAT.COMM_FAULT(m)
+            STAT.COMM_FAULT(m)
 
         except PS.PS_Exception, exc:
-            traceback.print_exc()
             self._alarm(str(exc))
 
         finally:
@@ -702,7 +700,6 @@ class BrukerEC_PS(PS.PowerSupply):
             raise PS.PS_Exception(msg)
 
         port = self.Port+idx
-#        self.log.debug('obj_vdq %4x port %d, %d', cobj, self.Port, port)
         rs = self.cab.command_seq(port, 'OBJ=%d' % cobj, 'VAL/')
         if rs[0]=='*':
             raise PS.PS_Exception('time out or undefined can bus object %x' % cobj)
@@ -771,7 +768,6 @@ class BrukerEC_PS(PS.PowerSupply):
                 return True
         except Exception:
             self.log.exception('is_ramping')
-
 
     def is_WaveGeneration_allowed(self, write):
         return not write or not self.is_power_on()
