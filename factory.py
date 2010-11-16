@@ -17,11 +17,12 @@
 # You should have received a copy of the GNU General Public License
 # along with tango-ds.  If not, see <http://www.gnu.org/licenses/>.
 
+from time import time
+
 from PyTango import READ, READ_WRITE, DevBoolean, DevDouble, DevString, \
     DevVoid, SCALAR, DevShort, AttrQuality, DevUShort, DevULong, DevLong
-import ps_standard as PS
-from ps_util import txt
-from time import time
+
+import PowerSupply.standard as PS
 
 VDQ = PS.VDQ
 
@@ -51,6 +52,10 @@ def start(device_class, class_class):
   global CLASS
   DEVICE = device_class
   CLASS = class_class
+
+def add_commands(*commands):
+    for c in commands:
+        add_cmd(c)
 
 def add_cmd(cmdname,
     ind = [DevVoid,''],
@@ -163,9 +168,6 @@ def create_rfun(aname, query='auto'):
 
     @PS.AttrExc
     def rfun(inst, attr):
-        if not inst.cab.all_initialized():
-            attr.set_quality(PS.AQ_INVALID)
-            return
         aname = attr.get_name()
         vdq = inst.vdq(aname, query=query)
         vdq.set_attr(attr)

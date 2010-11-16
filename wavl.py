@@ -1,6 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-# waveform_loader.py
+
+# wavl.py
 # TANGO Device Server (http://sourceforge.net/projects/tango-ds/)
 #
 # Copyright (c) 2009 by None
@@ -29,15 +30,19 @@ from __future__ import with_statement
 
 # imports from Standard Library
 from time import sleep, time
+from threading import Lock, Thread
+from collections import deque
+from types import NoneType
+import numpy as numpy
+from zlib import crc32
+from functools import partial
 
 # extra modules
-import PyTango as Tg
-import ps_util as PU
-import ps_standard as PS
-from threading import RLock, Lock, Thread, Semaphore
-from collections import deque
-import logging
-from types import NoneType
+import PowerSupply.util as PU
+import PowerSupply.standard as PS
+
+# local imports
+from wavl_hash import *
 
 WAVE_PORT = 3702
 TERM = '\r\n'
@@ -49,11 +54,11 @@ TIME_BASE = 0.45+1.0
 # value corresponding to nominal setting
 PT_MAX = 0x7ffff
 PT_MIN = -PT_MAX
-PT_NOMINAL =  0x3ffff
 
 READY = 'ready'
 
 _WAVL = None #< recent most created wave form loader
+
 
 def instance():
     global _WAVL
@@ -74,7 +79,6 @@ class Load(object):
 
 class Download(Load):
 
-    ACTIVE_MSG = 'downloading...'
     BASE_MSG = 'download'
 
     def __init__(self, port, wave, data, verify=True):
@@ -87,13 +91,13 @@ class Download(Load):
       return 'Download(port %d, %d pt)' % (self.port, len(self.data))
 
     def run(self, impl, wavl):
+        impl.ramp_off()
         rval = wavl.download(self.port, self.data)
         impl.push_wave_down(self.wave)
         return rval
 
 class Upload(Load):
 
-    ACTIVE_MSG = 'uploading...'
     BASE_MSG = 'upload'
 
     def __init__(self, port, maxlen=None):
@@ -118,21 +122,40 @@ class WaveformException(PS.PS_Exception):
         text = response[5:]
         PS.PS_Exception.__init__(self, text)
 
+
+def bebusy(msg):
+
+    def wrapper_maker(f):
+        def wrap_busy(self, *args, **kwargs):
+
+            self.busy = msg
+            try:
+                return f(self, *args,**kwargs)
+            finally:
+                self.busy = None
+            print 'wrapper maker',f
+        return wrap_busy
+
+    return wrapper_maker
+
 class WaveformLoader(object):
     '''Managing the thread for up- and downloading waveforms.
     '''
 
     active_load = None
-    log_name = 'wavl'
+    busy = None
 
     def __init__(self):
         global _WAVL
         _WAVL = self
-        self.log = logging.getLogger(self.log_name)
+        self.log = None
         self.sok = PU.FriendlySocket()
-        self.timeout = self.sok.timeout
-        # locks the socket used for up and downloading
-        self.soklock = RLock()
+        self.sok.reconnect_delay = 20
+        self.sok.connect_timeout = 2.0
+        # up- and downloads set their own timeouts
+        self.sok.read_timeout = TIME_BASE
+
+    is_connected = property(lambda self: self.sok.is_connected)
 
     def connect(self, host):
         self.sok.connect(host, WAVE_PORT)
@@ -146,17 +169,21 @@ class WaveformLoader(object):
     def __del__(self):
         self.disconnect_exc()
 
+    @bebusy('uploading ramp')
     def upload(self, ch, maxlen=None):
         '''reads waveform from hardware, discarding the last point.
            since the server appends a copy of the first point to then end.
         '''
+        sok = self.sok
+        if not sok.is_connected:
+            raise PS.PS_Exception('not connected')
         cmd_start_ul = 'u'+str(ch)+TERM
         wave = deque()
-        start_t = time()
-        if maxlen is None: maxlen = MAX_WAVE_LEN
         tmout = AVG_TIME_PER_SAMPLE*maxlen + TIME_BASE
         self.log.debug('starting upload %s, timeout %s', ch, tmout)
+        start_t = time()
         self.sok.write(cmd_start_ul)
+        if maxlen is None: maxlen = MAX_WAVE_LEN
         self.sok.timeout = tmout
         try_again = True
         while True:
@@ -208,21 +235,26 @@ class WaveformLoader(object):
             msg = 'waveform point %d too small: %d < %d' % (idx, min_dat, PT_MIN)
             raise PS.PS_Exception(msg)
 
+    @bebusy('downloading ramp')
     def download(self, ch, wave, verify=1):
         '''Transmits waveform to control unit.
         '''
-        wave = tuple(wave)
-        # records wave for reference if download fails
-        tmout = AVG_TIME_PER_SAMPLE * len(wave) + TIME_BASE
-        self.log.debug('starting download %s, timeout %s s',ch, tmout)
-        self.sok.timeout = tmout
-        buf = 'd%d' % ch+TERM + \
-            ''.join("%d"%w+TERM for w in wave) + \
-            ';'+TERM
+        sok = self.sok
+        if not sok.is_connected:
+            raise PS.PS_Exception('not connected')
+
+        wave = tuple(int(w) for w in wave)
+        tmout = self.sok.timeout
+        self.log.debug('starting download %s, timeout %s s', ch, tmout)
+        sok.timeout = sok.read_timeout
+        start_dl_cmd = 'd'+str(ch)+TERM
+        sok.write(start_dl_cmd)
+        buf = ''.join(str(w)+TERM for w in wave) + ';' + TERM
         self.log.debug('buf contains %d characters' % len(buf))
         start_t = time()
-        self.sok.write(buf)
-        ret = self.sok.readline().strip()
+        sok.timeout = AVG_TIME_PER_SAMPLE * len(wave) + TIME_BASE
+        sok.write(buf)
+        ret = sok.readline().strip()
         if not ret.startswith('ok'):
             raise WaveformException(ret)
         duration = time()-start_t
@@ -237,8 +269,10 @@ class WaveformLoader(object):
         self._duration = duration
         return ret
 
+    @bebusy('cancel')
     def cancel(self):
         self.sok.write('!'+TERM)
         r = self.sok.readline().strip()
         self.log.debug('cancel: %s',r)
         return r
+
