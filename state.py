@@ -14,6 +14,7 @@ from PyTango import DevState
 import PyTango as Tg
 
 import PowerSupply.standard as PS
+from PowerSupply.util import bitpack2, bitunpack, bit_filter_msg
 
 PM = PS.MSG
 
@@ -57,20 +58,27 @@ TYPE_8.update({
 class Module(object):
     """Represents a regulation board
     """
-
-    errors = []
+    error_code = None
+    errors = None
     machine_stat = {
-        0 : (DevState.UNKNOWN, '? regulation board without machine_stat'),
-        None : (DevState.UNKNOWN, '? MachineState is None'),
+        0 : (DevState.UNKNOWN, 'not applicable'),
+        None : (DevState.UNKNOWN, 'not applicable'),
     }
+    alias = ()
+    fullname = None
 
-    def __init__(self, name, errors=None, machine_stat=None):
+
+    def __init__(self, name, errors=None, machine_stat=None, fullname=None):
         if not name is None:
             self.name = name
         if not errors is None:
             self.errors = errors
         if not machine_stat is None:
             self.machine_stat = machine_stat
+        if fullname is None:
+            self.fullname = self.name
+        else:
+            self.fullname = fullname
 
         # required for update_stat2
         self.alarms = []
@@ -82,7 +90,7 @@ class Module(object):
     __repr__ = __str__
 
     def update_stat2(self):
-        '''Updates stat attribute from information queried before
+        '''Updates stat attribute from self.state_id and self.error_code
         '''
         self.alarms = bit_filter_msg(self.error_code, self.errors)
         if not self.errors:
@@ -313,15 +321,25 @@ ERRORS_CABINET = [
 assert(len(ERRORS_CABINET)==16)
 
 MOD_C = Module('corrector', ERRORS_CORR, TYPE_1)
-MOD_Q = Module('4Q', ERRORS_QUAD, TYPE_3 )
-MOD_QM = Module('4Q master', ERRORS_BEND, TYPE_3 )
-MOD_QS = Module('4Q slave', ERRORS_BEND, TYPE_3 )
+MOD_C.alias = ('cor', 'c', 't1')
+MOD_Q = Module('4Q', ERRORS_QUAD, TYPE_3, 'quadrupole 4Q standalone')
+MOD_Q.alias = ( 'q', 't3', 'quad', 'quad standalone')
+MOD_QM = Module('4Q master', ERRORS_BEND, TYPE_3, 'quadrupole 4Q master' )
+MOD_QM.alias = ('qm', 'quad master')
+MOD_QS = Module('4Q slave', ERRORS_BEND, TYPE_3, 'quadrupole 4Q slave' )
+MOD_QS.alias = ('qs', 'quad slave')
 MOD_BUCK = Module('buck', ERRORS_BUCK, TYPE_4 )
+MOD_BUCK.alias = ('t4', )
 MOD_BUCK1 = Module('buck 1', ERRORS_BUCK, TYPE_4 )
+MOD_BUCK1.alias = ('buck1',)
 MOD_BUCK2 = Module('buck 2', ERRORS_BUCK, TYPE_4 )
+MOD_BUCK2.alias = ('buck2',)
 MOD_S = Module('sextupole', ERRORS_CORR, TYPE_7 )
-MOD_BM = Module('4Q master', ERRORS_BEND, TYPE_8 )
-MOD_BS = Module('4Q slave', ERRORS_BEND, TYPE_8 )
+MOD_S.alias = ('sex', '6', 't7')
+MOD_BM = Module('4Q master', ERRORS_BEND, TYPE_8, 'bending 4Q master' )
+MOD_BM.alias = ( 'bend', 'bend master', 'bm', 't8')
+MOD_BS = Module('4Q slave', ERRORS_BEND, TYPE_8, 'bending 4Q slave' )
+MOD_BS.alias = ( 'bend', 'bend slave', 'bs')
 CABINET_XI = xrange(12, 16)
 
 # quadrupole types
@@ -372,23 +390,35 @@ COBJ_BRK_CONFIG2 = 0x2038
 
 class __ModuleRegistry(object):
 
+
     def __init__(self):
         self.name_dict = dict()
         self.name_list = []
+        self.module_list = []
 
     def register(self, *modules):
         for m in modules:
-            self.name_dict[m.name] = m
-            self.name_list.append(m)
+            self.module_list.append(m)
+            self.name_dict[m.fullname.lower()] = m
+
+            for a in m.alias:
+                self.name_dict[a] = m
 
     def get(self, name):
-        mod = self.name_dict.get(name)
-        return deepcopy(mod)
+        mod = self.name_dict.get(name.lower())
+        return mod
+
+    def ls1(self, m):
+        names = [ m.fullname ]
+        names +=  m.alias
+        return names
 
     def ls(self):
-        return self.name_list
+        return [ ', '.join(self.ls1(m)) for m in self.module_list ]
 
 MODULE_REGISTRY = __ModuleRegistry()
+MODULE_REGISTRY.register(MOD_C, MOD_Q, MOD_QM, MOD_QS, MOD_BUCK, MOD_BUCK1,
+    MOD_BUCK2, MOD_S, MOD_BM, MOD_BS)
 
 # dummy object that is never equal to a 'real' state (integer)
 STATE_NONE = object()
@@ -397,7 +427,7 @@ BITCOUNT = (7,24)
 BITOVER = (0,0)
 
 def synthesize_error_code(st, error_code):
-    code, overflow = bitpack2(BITCOUNT, BITOVER, (st, code) )
+    code, overflow = bitpack2(BITCOUNT, BITOVER, (st, error_code) )
     assert not overflow[0], 'state code {0} too big'.format(st)
     assert not overflow[1], 'error code {0} too big'.format(code)
     return code
@@ -406,26 +436,32 @@ def analyze_error_code(code):
     return bitunpack(BITCOUNT, BITOVER, code)[0]
 
 def format_module_stat(mod):
-    alarm_text = '\n'.join(mod.alarms) if alarms else 'no alarms'
+    alarm_text = ''
+    code = synthesize_error_code(mod.state_id, mod.error_code)
+    if mod.alarms:
+        for a in mod.alarms:
+            alarm_text += '\n    ' + a
+    else:
+        alarm_text = 'no alarm'
+    try:
+        status = mod.machine_stat[mod.state_id][1]
+    except (KeyError,IndexError):
+        status = 'undocumented state code'
     return (
-        'module {0}\n'.format(mod.name)+
-        'TANGO State '+str(mod.stat[0])+'\n' +
-        'status {1:x} {0}\n'.format(mod.state_id, mod.stat[1]) +
-        'alarms:\n' +  alarm_text
+        'board: {0}\n'.format(mod.fullname)+
+        'code: {0:#x}\n'.format(code)+
+        'status: {0:#x} {1}\n'.format(mod.state_id, status) +
+        'error code: {0:#x}\n'.format(mod.error_code) +
+        'alarms: ' +  alarm_text
     )
 
-if __name__ == '__main__':
-    import sys, optparse
-    OP = optparse.OptionParser()
-    opt, args = OP.parse_args(sys.argv)
-    if len(args)==0:
-        print MODULE_REGISTRY.ls()
+BOARD_LIST = [
+    MOD_C,
+    MOD_Q,
+    MOD_BUCK,
+    MOD_S ,
+]
 
-    else:
-        mod = MODULE_REGISTRY.get(args[1])
-        code = eval(args[2], {}, {})
-        mod.state_id, mod.error_code = analyze_error_code(code)
-        mod.update_stat2()
-        print format_module_stat(mod)
+
 
 

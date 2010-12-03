@@ -50,7 +50,7 @@ from PyTango import DevVoid, DevVarStringArray, DevString, DevDouble, \
 # base imports
 import PowerSupply.standard as PS
 from PowerSupply.standard import AQ_VALID, AQ_INVALID, AQ_CHANGING, AQ_ALARM, \
-    AQ_WARNING, DATABASE, VDQ
+    AQ_WARNING, DATABASE, VDQ, PseudoAttr
 from PowerSupply.util import NAN, bit_filter_msg, UniqList
 
 # relative imports
@@ -557,20 +557,18 @@ class BrukerEC_PS(PS.PowerSupply):
             for idx,mod in enumerate(t.module):
                 port = self.Port+idx
                 start_t = time()
-                sta_code = cab.checked_command(port, 'STA/')
+                mod.error_code = cab.checked_command(port, 'STA/')
                 state_start_t = time()
-                if idx==0:
-                    ps_state_id = cab.checked_command(port, 'STC/')
-                    self.cache['MachineState'].update(v=state_id, q=AQ_VALID)
+                mod.state_id =cab.checked_command(port, 'STC/')
                 state_t = (state_start_t+time()) / 2.0
-                err_code_t = (start_t+time()) / 2.0
-                err_code = state.synthesize_error_code(state_id, sta_code)
+                code_t = (start_t+time()) / 2.0
+                code = state.synthesize_error_code(mod.state_id, mod.error_code)
+                mod.update_stat2()
                 self.ERR_CODE[idx].update(v=err_code, d=err_code_t, q=AQ_VALID)
-                mod_msg = bit_filter_msg(code, mod.errors)
                 if MODULENUM>1:
-                    alarms += [ '['+mod.name+'] '+ m for m in mod_msg ]
+                    alarms += [ '['+mod.name+'] '+ m for m in mod.alarms ]
                 else:
-                    alarms += mod_msg
+                    alarms += mod.alarms
 
             self.update_attr('ErrorCode')
             ps_state_id = self.update_attr('MachineState')
@@ -1006,7 +1004,7 @@ class BrukerEC_PS(PS.PowerSupply):
         return self.ERR_CODE[0]
 
     def query_MachineState(self):
-        return self.STC_CODE[0]
+        return self.pstype().module[0].state_id
 
     def query_ec(self, mnemonic, conv_fun):
         '''Executes EC query 'mnemonic' in order to obtain the value of an

@@ -1,4 +1,4 @@
-#!/usr/bin/env python2.5
+#!/usr/bin/python
 # -*- coding: utf-8 -*-
 
 # Python standard library imports
@@ -152,12 +152,12 @@ class CabinetControl(state.Module):
         # locks link to Ethernet bridge
         self.lck = RLock()
         self.rem_vdq = factory.VDQ(False)
-        self.updater = UpdateThread()
 
         self.error_code = 0
         self.state_id = None
         self.update_t = None
         # only true when the cabinet is ON
+        self.updater = None
 
         self.desc = 'generic'
         self.stat = (DevState.UNKNOWN, 'unknown')
@@ -179,17 +179,22 @@ class CabinetControl(state.Module):
     is_connected = property(lambda self: self.comm.is_connected)
 
     def start(self):
+        if self.update is None:
+            self.updater = UpdateThread()
         self.updater.start()
 
     def stop(self):
-        self.updater.running = False
+        if self.updater is None:
+            return
+        else:
+            self.updater.running = False
 
     def restart(self):
       self.stop()
       old_register = copy(self.updater.register)
       self.updater = UpdateThread()
       self.updater.add_list(old_register)
-      self.start()
+      self.start(re=True)
 
     def connect(self, host, type_hint=0):
         '''Tells where to connect to. The actual connecting is done by reconnect.
@@ -477,28 +482,26 @@ class STB_Cabinet(CabinetControl):
     ] + [True]*23 + ['Timeout']
 #    MSB and 2 extra bytes used only for Timeout
 
-    machine_stat = {
-        None : (Tg.DevState.UNKNOWN, 'stateless cabinet'),
-        0 : (Tg.DevState.UNKNOWN, 'stateless cabinet')
-    }
-
     def reset_interlocks(self):
         self.reset_interlocks_p(0)
 
 
 class DC_Cabinet(STB_Cabinet):
-    name = 'cabinet transferlines'
+    name = 'cabinet transferline'
+    alias = ('cabt', 'cablt', 'cabbt')
     use_waveforms = False
 
 class Wave_Cabinet(STB_Cabinet):
     name = 'cabinet correctors'
+    alias = ('cab1', 'cabcor', 'cabc')
     use_waveforms = True
     def reset_interlocks(self):
         self.reset_interlocks_p(RELAY_PORT)
 
 class Sex_Cabinet(Wave_Cabinet):
     name = 'cabinet sextupoles'
-    errors = copy(WaveCabinet.errors)
+    alias = ('cab6', 'cabsex', 'cabs')
+    errors = copy(Wave_Cabinet.errors)
     errors[3] = False
 
 class Big_Cabinet(Wave_Cabinet):
@@ -508,15 +511,15 @@ class Big_Cabinet(Wave_Cabinet):
 
     errors = [
     # LSB
-        'cabinet CAN communication',
+        'cabinet CAN bus communication',
         'cabinet EPROM',
         'current RMS limit',
         'cabinet watchdog',
 
         'personal safety (PSS)',
         'phase',
-        'door open',
-        'cabinet water',
+        PM.DOOR,
+        PM.CABINET_WATER,
     # MSB
         'cabinet on',
         'cabinet fuse',
@@ -552,7 +555,8 @@ class Big_Cabinet(Wave_Cabinet):
 
 class Bend_Cabinet(Big_Cabinet):
 
-    cabinet = 'cabinet bending'
+    name = 'cabinet bending'
+    alias = ('cabb', 'cab2')
     DS = DevState
     machine_stat = (
         (DS.OFF, 'CONFIG'),
@@ -578,6 +582,7 @@ class Bend_Cabinet(Big_Cabinet):
 class Quad_Cabinet(Big_Cabinet):
 
     name = 'cabinet quadrupoles'
+    alias = ('cabq', 'cab4')
     DS = DevState
     machine_stat = list(Bend_Cabinet.machine_stat[0:9]) + [
         (DS.MOVING, 'resetting cabinet...'),
@@ -655,5 +660,29 @@ CAB_CT = {
     8 : ( Bend_Cabinet, 'dipole' )
 }
 
-state.MODULE_REGISTRY.register(WaveCabinet, DC_Cabinet, Quad_Cabinet, Sex_Cabinet,
-    Bend_Cabinet)
+state.MODULE_REGISTRY.register(Wave_Cabinet(), DC_Cabinet(), Quad_Cabinet(), Sex_Cabinet(),  Bend_Cabinet())
+
+BOARD_LIST = state.BOARD_LIST + [
+    state.MODULE_REGISTRY.get('cab6') ,
+    state.MODULE_REGISTRY.get('cab4') ,
+    state.MODULE_REGISTRY.get('cab2') ,
+]
+
+def main():
+    import sys, optparse
+    OP = optparse.OptionParser()
+    opt, args = OP.parse_args(sys.argv)
+    if len(args) < 2:
+        print 'usage: {0} BOARD CODE'.format(args[0])
+        print 'known regulation boards\n   ',
+        print '\n    '.join(state.MODULE_REGISTRY.ls())
+
+    else:
+        mod = state.MODULE_REGISTRY.get(args[1])
+        code = eval(args[2], {}, {})
+        mod.state_id, mod.error_code = state.analyze_error_code(code)
+        mod.update_stat2()
+        print state.format_module_stat(mod)
+
+if __name__ == "__main__":
+    main()
