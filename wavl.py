@@ -236,7 +236,7 @@ class WaveformLoader(object):
             raise PS.PS_Exception(msg)
 
     @bebusy('downloading ramp')
-    def download(self, ch, wave, verify=1):
+    def download(self, ch, wave, verify=0):
         '''Transmits waveform to control unit.
         '''
         sok = self.sok

@@ -1,3 +1,11 @@
+1.12
+* not pushing WaveName anymore working around a bug in Tango fixed in 7.2
+* added ErrorCode2,3,4 for bend / quadrupole power supplies
+* ErrorCode includes now the state as well
+* removed command UpdateState from Tango level to avoid accidentically polling it
+* major internal changes in cabinet state handling, in order to provide
+  explanation of ErrorCode attributes
+
 1.11
 * fixes problem preventing regulation parameters to be written even when
   RegulationTuneable was set to True

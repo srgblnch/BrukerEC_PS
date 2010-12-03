@@ -7,7 +7,7 @@
 '''
 
 # Standard Library
-import copy
+from copy import copy, deepcopy
 
 # Extra Packages
 from PyTango import DevState
@@ -15,18 +15,88 @@ import PyTango as Tg
 
 import PowerSupply.standard as PS
 
-PSSL = PS.StateLogic
+PM = PS.MSG
+
+TYPE_1 = {
+    0x00: (DevState.ALARM, 'GSM_CONFIG'),
+    0x01: (DevState.ALARM, 'GSM_CONFIG_1' ),
+    0x02: (DevState.ALARM, 'SYNC' ),
+    0x03: (DevState.OFF, 'IDLE: relay opened, pulse off (DC OFF)' ),
+    0x04: (DevState.FAULT, 'ADC_CAL'),
+    0x05: (DevState.INIT, 'INRUSH'),
+    0x06: (DevState.ON, 'DCON: power on' ),
+    0x07: (DevState.STANDBY, 'STANDBY' ),
+    0x08: (DevState.INIT, 'PULSE ON'),
+    0x09: (DevState.ALARM, 'REG ON'),
+    0x0a: (DevState.ON, 'RUNNING: relay closed, pulse and regulation on (DC ON)'),
+    0x0b: (DevState.INIT, 'STOPPING'),
+    0x0c: (DevState.ALARM, 'FAULT: relay opened, pulse and regulation off, error pending'),
+    0x0d: (DevState.ALARM, 'FAULT_ZC'),
+}
+
+TYPE_3 = deepcopy(TYPE_1)
+TYPE_3.update({
+    0x00: (DevState.INIT, 'GSM_CONFIG: waiting for synchronization command'),
+    0x00: (DevState.INIT, 'GSM_CONFIG_1'),
+    0x03: (DevState.OFF, 'IDLE: pulse off (DC OFF)' ),
+    0x08: (DevState.INIT, 'PULSEON: activating 4Q PWM and regulation'),
+    0x09: (DevState.INIT, 'REGON: send DC ON order, waiting weak board(s) to reach RUNNING state'),
+    0x0a: (DevState.ON, 'RUNNING: pulse and regulation on (DC ON)'),
+    0x0c: (DevState.ALARM, 'FAULT_PN: pulse and regulation on, error pending'),
+    0x0d: (DevState.ALARM, 'FAULT_PF: pulse and regulation off, error pending'),
+})
+
+TYPE_4 = deepcopy(TYPE_1)
+TYPE_6 = deepcopy(TYPE_1)
+TYPE_7 = deepcopy(TYPE_1)
+TYPE_8 = deepcopy(TYPE_3)
+TYPE_8.update({
+    0x03: (DevState.OFF, 'IDLE: relay opened, pulse off (DC OFF)' ),
+})
 
 class Module(object):
+    """Represents a regulation board
+    """
 
-    def __init__(self, name, err):
-        self.name = name
-        self.errors = err
+    errors = []
+    machine_stat = {
+        0 : (DevState.UNKNOWN, '? regulation board without machine_stat'),
+        None : (DevState.UNKNOWN, '? MachineState is None'),
+    }
+
+    def __init__(self, name, errors=None, machine_stat=None):
+        if not name is None:
+            self.name = name
+        if not errors is None:
+            self.errors = errors
+        if not machine_stat is None:
+            self.machine_stat = machine_stat
+
+        # required for update_stat2
+        self.alarms = []
+        self.state_id = None
 
     def __str__(self):
         return '%s' % self.name
 
     __repr__ = __str__
+
+    def update_stat2(self):
+        '''Updates stat attribute from information queried before
+        '''
+        self.alarms = bit_filter_msg(self.error_code, self.errors)
+        if not self.errors:
+            self.stat = DevState.INIT, 'cabinet type not detected (yet)'
+        elif self.alarms:
+            status = '\n'.join(self.alarms)
+            self.stat = DevState.ALARM, status
+        elif self.state_id is None:
+            self.stat = [ DevState.INIT, 'machine state not available (?)' ]
+        elif self.state_id > len(self.machine_stat):
+            self.stat = [ DevState.FAULT, 'unknown state [%02d]' % self.state_id ]
+        else:
+            self.stat = self.machine_stat[self.state_id]
+
 
 class RP(object):
       """Description of 1 RegulationParameter."""
@@ -125,7 +195,7 @@ class PSType_Big(PSType_SmallQuad):
         return PS.VDQ(adv_master+adv_slave, q=PS.AQ_VALID)
 
 # common error messages
-EBIT = lambda x: 'unused bit %d' % x
+EBIT = lambda x: PM.UNDOCUMENTED_BIT.format('error', x)
 E_EARTH = 'earth leakage'
 E_EEPROM = 'EEPROM error'
 E_BIG_LOAD = 'load over-current, voltage or RMS current'
@@ -242,17 +312,17 @@ ERRORS_CABINET = [
 ] + E_EXTERN
 assert(len(ERRORS_CABINET)==16)
 
-MOD_RELAY = Module('Relay', ERRORS_CABINET)
-MOD_RELAY.port = 19
-MOD_Q = Module('4Q', ERRORS_QUAD)
-MOD_BM = Module('4Q master', ERRORS_BEND)
-MOD_BS = Module('4Q slave', ERRORS_BEND)
-MOD_BUCK = Module('buck', ERRORS_BUCK)
-MOD_BUCK1 = Module('buck 1', ERRORS_BUCK)
-MOD_BUCK2 = Module('buck 2', ERRORS_BUCK)
-MOD_C = Module('corrector', ERRORS_CORR)
-MOD_S = Module('sextupole', ERRORS_CORR)
-CABINET_XI=xrange(12, 16)
+MOD_C = Module('corrector', ERRORS_CORR, TYPE_1)
+MOD_Q = Module('4Q', ERRORS_QUAD, TYPE_3 )
+MOD_QM = Module('4Q master', ERRORS_BEND, TYPE_3 )
+MOD_QS = Module('4Q slave', ERRORS_BEND, TYPE_3 )
+MOD_BUCK = Module('buck', ERRORS_BUCK, TYPE_4 )
+MOD_BUCK1 = Module('buck 1', ERRORS_BUCK, TYPE_4 )
+MOD_BUCK2 = Module('buck 2', ERRORS_BUCK, TYPE_4 )
+MOD_S = Module('sextupole', ERRORS_CORR, TYPE_7 )
+MOD_BM = Module('4Q master', ERRORS_BEND, TYPE_8 )
+MOD_BS = Module('4Q slave', ERRORS_BEND, TYPE_8 )
+CABINET_XI = xrange(12, 16)
 
 # quadrupole types
 PSTYPE_CODE_QUAD = 3
@@ -264,7 +334,7 @@ PSTYPE_SMALL_QUAD = PSType_SmallQuad('small quadrupole',
 )
 # quad with 4 sub-modules ( QC340 )
 PSTYPE_BIG_QUAD = PSType_Big('big quadrupole',
-  MOD_Q, MOD_BUCK1, MOD_Q, MOD_BUCK2
+  MOD_QM, MOD_BUCK1, MOD_QS, MOD_BUCK2
 )
 
 PSTYPE_BEND = PSType_Big('bending',
@@ -272,12 +342,12 @@ PSTYPE_BEND = PSType_Big('bending',
 
 # sextupole type
 PSTYPE_SEX = PSType('sextupole', MOD_C, XI=xrange(12, 16))
-PSTYPE_SEX.REG_PARAM = copy.copy(PSType.REG_PARAM)
+PSTYPE_SEX.REG_PARAM = copy(PSType.REG_PARAM)
 del PSTYPE_SEX.REG_PARAM['BuckV']
 
 # maps software types to PSTypes
 REG2PSTYPE = {
-    1 : PSType('corrector', MOD_C, XI=xrange(12, 16)), # correctors and quadrupoles?
+    1 : PSType('corrector', MOD_C, XI=xrange(12, 16) ), # correctors and quadrupoles?
     2 : PSType('LT bend', MOD_C, XI=xrange(12, 16)), # bending magnets of the LT cabinet
     3 : None, # is a quadrupole but could have 2 or 4 submodules, so further work required
     4 : None, #< buck for ???
@@ -300,29 +370,62 @@ COBJ_MAIN_IREF_LIMIT = 0x2021
 COBJ_VERSION = 0x2034
 COBJ_BRK_CONFIG2 = 0x2038
 
-class StateLogic(PS.StateLogic):
-    '''Encapsulates all logic required to update state, status and errors.
-    '''
+class __ModuleRegistry(object):
 
-    FAULT = PSSL.FAULT
-    MACHINE_STAT = {
-        0x00: (PSSL.ALARM, 'synchronization required 0' ),
-        0x01: (PSSL.ALARM, 'synchronization required 1' ),
-        0x02: (PSSL.ALARM, 'awaiting synchronization trigger'),
-        0x03: (PSSL.OFF,),
-        0x04: (PSSL.FAULT, 'ADC_CAL'),
-        0x05: (PSSL.SWITCHING_ON, 'INRUSH'),
-        0x06: (PSSL.ON_CURRENT,),
-        0x07: (PSSL.STANDBY,),
-        0x08: (PSSL.RUNNING, 'PULSE ON'),
-        0x09: (PSSL.ALARM, 'REG ON'),
-        0x0a: (PSSL.ON_CURRENT,),
-        0x0b: (PSSL.SWITCHING_OFF,),
-        0x0c: (PSSL.ALARM, 'fault'),
-        0x0d: (PSSL.ALARM, 'fault ZC'),
-        29: (PSSL.ALARM, 'ALARM 29')
-    }
+    def __init__(self):
+        self.name_dict = dict()
+        self.name_list = []
+
+    def register(self, *modules):
+        for m in modules:
+            self.name_dict[m.name] = m
+            self.name_list.append(m)
+
+    def get(self, name):
+        mod = self.name_dict.get(name)
+        return deepcopy(mod)
+
+    def ls(self):
+        return self.name_list
+
+MODULE_REGISTRY = __ModuleRegistry()
 
 # dummy object that is never equal to a 'real' state (integer)
 STATE_NONE = object()
+
+BITCOUNT = (7,24)
+BITOVER = (0,0)
+
+def synthesize_error_code(st, error_code):
+    code, overflow = bitpack2(BITCOUNT, BITOVER, (st, code) )
+    assert not overflow[0], 'state code {0} too big'.format(st)
+    assert not overflow[1], 'error code {0} too big'.format(code)
+    return code
+
+def analyze_error_code(code):
+    return bitunpack(BITCOUNT, BITOVER, code)[0]
+
+def format_module_stat(mod):
+    alarm_text = '\n'.join(mod.alarms) if alarms else 'no alarms'
+    return (
+        'module {0}\n'.format(mod.name)+
+        'TANGO State '+str(mod.stat[0])+'\n' +
+        'status {1:x} {0}\n'.format(mod.state_id, mod.stat[1]) +
+        'alarms:\n' +  alarm_text
+    )
+
+if __name__ == '__main__':
+    import sys, optparse
+    OP = optparse.OptionParser()
+    opt, args = OP.parse_args(sys.argv)
+    if len(args)==0:
+        print MODULE_REGISTRY.ls()
+
+    else:
+        mod = MODULE_REGISTRY.get(args[1])
+        code = eval(args[2], {}, {})
+        mod.state_id, mod.error_code = analyze_error_code(code)
+        mod.update_stat2()
+        print format_module_stat(mod)
+
 

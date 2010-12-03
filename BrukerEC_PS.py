@@ -39,6 +39,7 @@ from pprint import pformat, pprint
 from copy import deepcopy
 from time import time, sleep
 from errno import ECONNREFUSED, EHOSTUNREACH
+from functools import partial
 
 # TANGO imports
 import PyTango as Tg
@@ -143,7 +144,6 @@ def cfg_events(serv):
     # disables the event configuration for future runs
     DATABASE.put_device_property(cab_name, {'ConfigureEvents':'0'})
 
-
 class BrukerEC_PS(PS.PowerSupply):
     '''Representing individual power supplies.
     '''
@@ -160,7 +160,8 @@ class BrukerEC_PS(PS.PowerSupply):
     PUSHED_ATTR = (
         'Current', 'CurrentSetpoint', 'Voltage',
         'State', 'Status', 'RemoteMode', 'MachineState', 'ErrorCode',
-        'WaveStatus', 'WaveGeneration', 'WaveOffset'
+        #'WaveStatus',
+        'WaveGeneration', 'WaveOffset'
     )
 
     def __init__(self, cl, name):
@@ -195,7 +196,8 @@ class BrukerEC_PS(PS.PowerSupply):
         self.cab.updater.add(self.UpdateState)
         self.STAT.INITIALIZED()
         self.STAT.set_stat2(Tg.DevState.UNKNOWN, 'not yet connected')
-        self.ERR_CODE = None
+        self.ERR_CODE = [ VDQ(0) ]
+        self.STC_CODE = [ VDQ(0) ]
 
     # Basic Utilities
     def query(self, aname):
@@ -340,6 +342,16 @@ class BrukerEC_PS(PS.PowerSupply):
         if self.cab.use_waveforms:
             self.tuner = tuning.Tuner(self, pst)
 
+        # add extra attributes for ErrorCode where necessary
+        for idx,mod in enumerate(pst.module[1:]):
+            self.ERR_CODE.append(VDQ(0))
+            self.STC_CODE.append(VDQ(0))
+            def read_ErrorCodeX(inst, attr):
+                self.ERR_CODE[idx].set_attr(attr)
+
+            attr = Tg.Attr('ErrorCode'+str(idx+1), Tg.DevLong, Tg.READ)
+            self.add_attribute(attr, r_meth=partial(read_ErrorCodeX, 1))
+
         # after this line the pstype is considered fully detected
         self._pstype = pst
 
@@ -441,7 +453,6 @@ class BrukerEC_PS(PS.PowerSupply):
             self.wave_load = None
             sleep(0.25)
             self.cab.process_command_queue()
-
             self.cab.update_state()
             try:
                 self.update_attr('WaveLength')
@@ -509,9 +520,8 @@ class BrukerEC_PS(PS.PowerSupply):
 #            if not self.cab.all_initialized():
 #                return
 
-            # always updates Current readback and MachineState
+            # always updates Current readback
             Imeas = self.update_attr('Current')
-            STC = self.update_attr('MachineState')
 
             STEP = 5
             # local state, interlock
@@ -541,19 +551,36 @@ class BrukerEC_PS(PS.PowerSupply):
                 Inominal = self.value('CurrentNominal')
                 moving = ps_on and abs(Iref-Imeas) > self.RegulationPrecision
 
+            # always query STC (errors) and STA (machine state) for ErrorCode
             MODULENUM = len(t.module)
-            self.ERR_CODE = [None]*MODULENUM
             alarms = UniqList()
             for idx,mod in enumerate(t.module):
                 port = self.Port+idx
-                self.ERR_CODE[idx] = code = cab.checked_command(port, 'STA/')
+                start_t = time()
+                sta_code = cab.checked_command(port, 'STA/')
+                state_start_t = time()
+                if idx==0:
+                    ps_state_id = cab.checked_command(port, 'STC/')
+                    self.cache['MachineState'].update(v=state_id, q=AQ_VALID)
+                state_t = (state_start_t+time()) / 2.0
+                err_code_t = (start_t+time()) / 2.0
+                err_code = state.synthesize_error_code(state_id, sta_code)
+                self.ERR_CODE[idx].update(v=err_code, d=err_code_t, q=AQ_VALID)
                 mod_msg = bit_filter_msg(code, mod.errors)
                 if MODULENUM>1:
                     alarms += [ '['+mod.name+'] '+ m for m in mod_msg ]
                 else:
                     alarms += mod_msg
+
             self.update_attr('ErrorCode')
+            ps_state_id = self.update_attr('MachineState')
             alarms += self.cab.get_alarms()
+
+            # kludges around the fact that cabinet may indicate
+            # cabinet water flow being faulty but correctors and LT quadrupoles
+            # will not care
+            if t.name=='corrector' and PM.CABINET_WATER in alarms:
+                alarms.remove(PM.CABINET_WATER)
 
             # decides which state should be used
             # faults are sticky and must be fixed by ResetInterlocks
@@ -571,10 +598,10 @@ class BrukerEC_PS(PS.PowerSupply):
             elif ps_on:
                 STAT.ON()
 
-            elif STC in t.states_switch_on:
+            elif ps_state_id in t.states_switch_on:
                 STAT.SWITCHING_ON()
 
-            elif STC in t.states_switch_off:
+            elif ps_state_id in t.states_switch_off:
                 STAT.SWITCHING_OFF()
 
             elif cab.stat:
@@ -855,6 +882,10 @@ class BrukerEC_PS(PS.PowerSupply):
             # in case wave generation is not immediately updated
         if val:
             self.push_vdq('Voltage', q=AQ_INVALID)
+        else:
+            vdq = self.pstype().query_Voltage(self)
+            self.push_vdq('Voltage', *vdq.triple)
+
 
     @PS.AttrExc
     def write_WaveX(self,attr):
@@ -958,7 +989,8 @@ class BrukerEC_PS(PS.PowerSupply):
         self.push_vdq('WaveDuration', q=AQ_CHANGING)
         self.push_vdq('WaveStatus', dl.BASE_MSG+' pending', q=AQ_CHANGING)
         self.push_vdq('WaveId', q=AQ_CHANGING)
-        self.push_vdq('WaveName', v=self.value('WaveName',''), q=AQ_ALARM)
+# do not push writeable DevStrings until Tiago updated to 7.2
+#        self.push_vdq('WaveName', v=self.value('WaveName',''), q=AQ_ALARM)
 
     def ramp_off(self):
         '''ensures that ps is not ramped after calling the function,
@@ -971,15 +1003,10 @@ class BrukerEC_PS(PS.PowerSupply):
             self.cmd('DCP=0')
 
     def query_ErrorCode(self):
-        e0 = self.ERR_CODE[0]
-        if e0 is None:
-            return VDQ(0)
-        else:
-            return VDQ(e0, q=AQ_VALID)
+        return self.ERR_CODE[0]
 
     def query_MachineState(self):
-        response = self.cab.checked_command(self.Port, 'STC/')
-        return VDQ(response, q=AQ_VALID)
+        return self.STC_CODE[0]
 
     def query_ec(self, mnemonic, conv_fun):
         '''Executes EC query 'mnemonic' in order to obtain the value of an
@@ -1170,7 +1197,7 @@ class BrukerEC_PS_Class(PS.PowerSupply_Class):
     attr_list['Version'] = [[DevShort, SPECTRUM, READ, 3] , {
         'description' : 'software version object: type, revision, release (0=Beta, 1=Release)'
         } ]
-    cmd_list = PS.gen_cmd_list(opt=(,'Command'))
+    cmd_list = PS.gen_cmd_list(opt=('Command',))
 
 factory.start(BrukerEC_PS,BrukerEC_PS_Class)
 # factory.add_mnemonic('On', 'DCP', tp=DevBoolean)
@@ -1261,9 +1288,9 @@ factory.add_attribute('WaveId', tp=DevLong, extra={
 })
 
 # retrieved directly from cache
-factory.add_ec_attr('MachineState', tp=DevLong, extra={
+factory.add_attribute('MachineState', tp=DevLong, extra={
     'description' : 'code for the internal status machine of the power supply control unit',
-    'format' : '%2d',
+    'format' : '%2x',
 })
 
 factory.add_ec_attr('ErrorCode', 'STA/', tp=DevLong,extra={
@@ -1323,8 +1350,9 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         self.wavl.reconnect_reap = self.wavl_reconnect_reap
 
         # for the cabinet instead of cache["XY"] _XY is used.
-        self._ErrorCode = VDQ(0, q=AQ_INVALID)
-        self._RemoteMode = VDQ(False, time(), AQ_INVALID)
+        self._ErrorCode = PseudoAttr('ErrorCode', 0)
+        self._RemoteMode = PseudoAttr('RemoteMode', False)
+        self._MachineState = PseudoAttr('MachineState', 0)
 
         self.cab.updater.add(self.UpdateState)
         xi_msg = [ getattr(self,'Interlock%d' % d) for d in range(1,5) ]
@@ -1370,7 +1398,7 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         self.wavl.reconnect_reap()
         self.cab.reconnect(reap=True)
         self.cab.command_seq(self.Port, 'RST=0')
-        self.cab.update_state()
+        self.cab.update()
 
     def restart_bsw_tcp(self):
         '''restarts bsw tcp repeater.
@@ -1390,28 +1418,29 @@ class BrukerEC_Cabinet(PS.PowerSupply):
         except Exception:
             self.log.error('while trying to restart bsw server', exc_info=1)
 
+
+    def change(self, pseudo_attr, *args, **kwargs):
+        pseudo_attr.update(*args, **kwargs)
+        if not pseudo_attr.value is None:
+            self.push_change_event(pseudo_attr.name, *pseudo_attr.triple)
+
     @PS.CommandExc
     def UpdateState(self):
+        # for all practical concerns UpdateState should behave like any command
+        # in order to avoid
         cab = self.cab
         try:
-            if not self.cab.reconnect():
+            if not cab.reconnect():
                 if cab.comm._exc_msg:
                     self.STAT.COMM_ERROR(self.cab.comm._exc_msg)
                 else:
                     self.STAT.COMM_ERROR('no connection to control unit %s' % cab.host)
                 return
-            self.cab.process_command_queue()
-            code = st = cab.update_state()
-            t0 = time()
-            self.push_change_event('MachineState', cab.state_id, t0, AQ_VALID)
-            self._ErrorCode = VDQ(code, t0, q=AQ_VALID)
-            self.push_change_event('ErrorCode', *self._ErrorCode.triple)
-            self.alarms.clear()
-            self.alarms += cab.get_alarms()
-            if self.alarms:
-                self.STAT.ALARM(self.alarms[0])
-            else:
-                self.STAT.set_stat2(*cab.stat)
+            cab.process_command_queue()
+            cab.update()
+            self.change(self._ErrorCode, cab.error_code, cab.update_t, q=AQ_VALID)
+            self.change(self._MachineState, cab.state_id, cab.update_t, q=AQ_VALID)
+            self.set_stat2(*cab.stat)
 
         except socket.timeout:
             self.STAT.COMM_ERROR('%s timed out' % cab.comm.host)

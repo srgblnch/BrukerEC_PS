@@ -22,6 +22,8 @@ import PowerSupply.standard as PS
 import factory
 import state
 
+PM = PS.MSG
+
 TYPE_MASK = 0xFFFFFF
 
 ERROR_RESPONSE = {
@@ -48,8 +50,6 @@ CAB_READY = 'cabinet ready'
 
 # how often commands shall be attempted
 COMMAND_RETRY = 3
-
-SOCKET_CONNECTION_REFUSED = 111
 
 def instance():
     global _CAB
@@ -124,26 +124,27 @@ class UpdateThread(Thread):
         self.busy.set()
 
 
-class CabinetControl(object):
+class CabinetControl(state.Module):
     '''Cabinet wide-status and control link.
     '''
+    name = 'cabinet'
     state_id = 0
     host = property(lambda inst: inst.comm.host)
     port = None #< port of the cabinet controller / relay board (used for resetting interlocks)
     type_hint = 0
     use_waveforms = None #< using None to indicate UNKNOWN
     # which alarm bits shall be used
-    mask = 0x00
 
     #< indicates which 'port' of the PS should be used to reading cabinet-wide
     # status and which relay board to use for switching on dipole & quad
     # the default (None) indicates that there is no relay board in the system
     # and the functionality is provided by the relay board
-    errors = None
     # when CAN bus hangs this flag will be true
     # reset it by explicit assignment or by calling update_state
 
+
     def __init__(self):
+        state.Module.__init__(self, None)
         self.can_hang = {}
         self.active_port = None
         self.comm = FriendlySocket()
@@ -154,6 +155,8 @@ class CabinetControl(object):
         self.updater = UpdateThread()
 
         self.error_code = 0
+        self.state_id = None
+        self.update_t = None
         # only true when the cabinet is ON
 
         self.desc = 'generic'
@@ -253,11 +256,6 @@ class CabinetControl(object):
         # standard cabinet has not external interlocks
         pass
 
-    def get_alarms(self):
-        if self.errors is None:
-            return [ 'type of cabinet not yet detected']
-        word = (self.error_code & ~self.mask)
-        return bit_filter_msg(word, self.errors)
 
     def reset_interlocks(self):
         self.log.debug('reset_interlocks stub')
@@ -408,12 +406,16 @@ class CabinetControl(object):
         self.log.error('can not turn off cabinet without relay board')
         raise PS.PS_Exception('cabinet without relay boards are always on.')
 
-    def update_state(self):
+    def update(self):
+        # querying state info
+        start_t = time()
         self.error_code = self.checked_command(0, 'STB/')
+        self.update_t = (start_t+time()) / 2.0
         rem = bool(int(self.command(0, 'REM/')))
         self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
-        self.stat = DevState.ON, 'cabinet ready'
-        return self.error_code
+        self.update_stat2()
+
+
 
     def process_command_queue(self):
         '''Executes all commands in command queue.
@@ -461,43 +463,51 @@ class CabinetControl(object):
 
 
 class STB_Cabinet(CabinetControl):
+    name = 'STB cabinet (abstract)'
     errors = [
     # LSB
         True,  #< documented as bit 16
         True,  #< documented as bit 17
         True,  #< documented as bit 18
-        'water interlock', #< documented as water interlock, not used for quad
-# and correctors de LT
-        'door interlock', #< 'door open'?
+        PM.CABINET_WATER, #< cabinet water interlock (only for bending)
+        PM.DOOR, #< 'door open'?
         False, #< documented as phase interlock; unused and always 1
-        'emergency / PSS',
+        PM.EMERGENCY_STOP,
         True,
     ] + [True]*23 + ['Timeout']
 #    MSB and 2 extra bytes used only for Timeout
 
+    machine_stat = {
+        None : (Tg.DevState.UNKNOWN, 'stateless cabinet'),
+        0 : (Tg.DevState.UNKNOWN, 'stateless cabinet')
+    }
+
     def reset_interlocks(self):
         self.reset_interlocks_p(0)
 
-    mask = 0x18
-
 
 class DC_Cabinet(STB_Cabinet):
+    name = 'cabinet transferlines'
     use_waveforms = False
 
 class Wave_Cabinet(STB_Cabinet):
+    name = 'cabinet correctors'
     use_waveforms = True
     def reset_interlocks(self):
         self.reset_interlocks_p(RELAY_PORT)
 
 class Sex_Cabinet(Wave_Cabinet):
-    mask = 0x08
+    name = 'cabinet sextupoles'
+    errors = copy(WaveCabinet.errors)
+    errors[3] = False
 
 class Big_Cabinet(Wave_Cabinet):
-
+    name = 'cabinet big (abstract)'
     mask = 0
-    MACHINE_STAT = None # abstract
+    machine_stat = None # abstract
 
     errors = [
+    # LSB
         'cabinet CAN communication',
         'cabinet EPROM',
         'current RMS limit',
@@ -521,22 +531,15 @@ class Big_Cabinet(Wave_Cabinet):
     def customize_xi(self, interlocks):
         self.errors[12:12+len(interlocks)] = interlocks
 
-    def update_state(self):
+    def update(self):
+        # querying state info
+        start_t = time()
         self.error_code = self.checked_command(RELAY_PORT, 'STB/')
         self.state_id = self.checked_command(RELAY_PORT, 'STC/')
-        self.stat = self.get_stat()
+        self.update_t = (start_t + time() ) / 2.0
         rem = bool(int(self.command(RELAY_PORT, 'REM/')))
         self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
-        return self.error_code
-
-    def get_stat(self):
-        if self.state_id is None: return None
-        if self.state_id > len(self.MACHINE_STAT):
-            s = [ DevState.STANDBY, CAB_READY+' [%02d]' % self.state_id ]
-        else:
-            s = list(self.MACHINE_STAT[self.state_id])
-            s[1] = s[1].lower()
-        return s
+        self.update_stat2()
 
     def power_on(self):
         self.command(RELAY_PORT, 'DCP=1')
@@ -549,8 +552,9 @@ class Big_Cabinet(Wave_Cabinet):
 
 class Bend_Cabinet(Big_Cabinet):
 
+    cabinet = 'cabinet bending'
     DS = DevState
-    MACHINE_STAT = (
+    machine_stat = (
         (DS.OFF, 'CONFIG'),
         (DS.OFF, 'cabinet off'),
         (DS.INIT, 'starting cabinet'),
@@ -573,8 +577,9 @@ class Bend_Cabinet(Big_Cabinet):
 
 class Quad_Cabinet(Big_Cabinet):
 
+    name = 'cabinet quadrupoles'
     DS = DevState
-    MACHINE_STAT = list(Bend_Cabinet.MACHINE_STAT[0:9]) + [
+    machine_stat = list(Bend_Cabinet.machine_stat[0:9]) + [
         (DS.MOVING, 'resetting cabinet...'),
         (DS.UNKNOWN, '(unused)'),
         (DS.INIT, 'ack. QV01 buck'),
@@ -603,10 +608,14 @@ class Quad_Cabinet(Big_Cabinet):
     ]
 
 CAN_BUS_TIMEOUT_CODE = 0x800000
+
+class CabinetException(PS.PS_Exception):
+    code = None
+
 class CanBusTimeout(PS.PS_Exception):
     '''Exception thrown when CAN bus timesout
     '''
-    pass
+    code = 0x10000
 
 def check(port, response, hint=''):
     '''Checks wether timeout occured and that channel in reply matches with
@@ -646,3 +655,5 @@ CAB_CT = {
     8 : ( Bend_Cabinet, 'dipole' )
 }
 
+state.MODULE_REGISTRY.register(WaveCabinet, DC_Cabinet, Quad_Cabinet, Sex_Cabinet,
+    Bend_Cabinet)
