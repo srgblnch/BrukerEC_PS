@@ -29,6 +29,7 @@ the upload respective download of a waveform.
 from __future__ import with_statement
 
 # imports from Standard Library
+import os, os.path
 from time import sleep, time
 from threading import Lock, Thread
 from collections import deque
@@ -66,9 +67,13 @@ def instance():
         _WAVL = WaveformLoader()
     return _WAVL
 
-def dump_to_file(wup, wdown):
-    open('up.txt', 'w').write('\n'.join(map(str,wup)))
-    open('down.txt', 'w').write('\n'.join(map(str,wdown)))
+def dump_to_file(dirname, wup, wdown):
+    os.makedirs(dirname)
+    pid = str(os.getpid)
+    fname_up = os.path.join(dirname, pid, 'up.txt')
+    fname_down = os.path.join(dirname, pid, 'down.txt')
+    open(fname_up, 'w').write('\n'.join(map(repr,wup)))
+    open(fname_down, 'w').write('\n'.join(map(repr,wdown)))
 
 class Load(object):
     def __init__(self, port):
@@ -154,6 +159,7 @@ class WaveformLoader(object):
         self.sok.connect_timeout = 2.0
         # up- and downloads set their own timeouts
         self.sok.read_timeout = TIME_BASE
+        self.dumpdir = '/tmp/BrukerEC-wavl/'
 
     is_connected = property(lambda self: self.sok.is_connected)
 
@@ -236,7 +242,7 @@ class WaveformLoader(object):
             raise PS.PS_Exception(msg)
 
     @bebusy('downloading ramp')
-    def download(self, ch, wave, verify=0):
+    def download(self, ch, wave, verify=1):
         '''Transmits waveform to control unit.
         '''
         sok = self.sok
@@ -262,8 +268,8 @@ class WaveformLoader(object):
             self.log.debug('verifiying...')
             w = self.upload(ch,len(wave))
             if tuple(w)!=tuple(wave):
-                dump_to_file(w,wave)
-                msg = 'wave form not correctly loaded: verfication failed!'
+                dump_to_file(self.dumpdir, w,wave)
+                msg = 'wave form not correctly loaded: verification failed!'
                 raise PS.PS_Exception(msg)
             self.log.info('download %d succeeded' % ch)
         self._duration = duration
