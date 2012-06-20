@@ -417,7 +417,7 @@ class BrukerBend_PS(PS.PowerSupply):
         nop(aname)
         return x if int(time()) % 2 else y
 
-    def distill_ne_quality(self, quality, x,y):
+    def distill_ne_quality(self, quality, x, y):
         if quality==AQ_INVALID: return AQ_INVALID
         r = x.value != y.value
         try:
@@ -474,10 +474,15 @@ class BrukerBend_PS(PS.PowerSupply):
             setattr(self, '_a'+aname, vdq)
             vdq.set_attr(attr)
 
-            if not aval1.w_value is None and not aval2.w_value is None:
-                w = valfun(aname+'_W', aval1.w_value, aval2.w_value)
-                if not w is None:
+            # calculate and set write values (for writeable attributes)
+            try:
+                attr_rw = BrukerBend_PS_Class.attr_list[aname][0][2]
+                if attr_rw in (Tg.WRITE, Tg.READ_WRITE):
+                    w = valfun(aname+'_W', aval1.w_value, aval2.w_value)
+                    if not w is None:
                         attr.set_write_value(w)
+            except Exception:
+                self.log.warn('read_attribute write_value', exc_info=1)
 
         except Tg.DevFailed:
             self.delay_update()
@@ -502,7 +507,7 @@ class BrukerBend_PS(PS.PowerSupply):
     def read_Current1(self, attr):
         self.read_attr1(self.bend1, attr, 'Current')
 
-    @PS.ExceptionHandler
+    @PS.AttrExc
     def read_Current2(self, attr):
         self.read_attr1(self.bend2, attr, 'Current')
 
@@ -707,7 +712,7 @@ class BrukerBend_PS(PS.PowerSupply):
         return b in BEND_FAULT_STATES or c == CAB_FAULT_STATE
 
     def delay_update(self, t=10):
-          self.next_update_t = time()+t
+        self.next_update_t = time()+t
 
     def upswitch_on(self, bend):
         '''Switches one bending power supply on.
@@ -1001,7 +1006,9 @@ class BrukerBend_PS(PS.PowerSupply):
         self.write_attribute(attr)
 
     def read_WaveName(self, attr):
-        self.read_attribute(attr)
+        def qual_fun(quality, x, y):
+           return AQ_INVALID if quality==AQ_INVALID else AQ_VALID
+        self.read_attribute(attr, qual_fun)
 
     def write_WaveName(self, wattr):
         self.write_attribute(wattr)
@@ -1073,11 +1080,11 @@ class BrukerBend_PS_Class(Tg.DeviceClass):
                 'Current2': deepcopy(attr_list['Current']),
                 'Voltage': attr_list['Voltage'],
                 'WaveGeneration' : [[ Tg.DevBoolean, Tg.SCALAR, Tg.READ_WRITE ]],
-                'Waveform' : [[ Tg.DevDouble, Tg.SPECTRUM, Tg.READ_WRITE, 2**14] , {} ],
-                'WaveX' : [[ Tg.DevDouble, Tg.SPECTRUM, Tg.READ_WRITE, 2**14] , {} ],
+#                'Waveform' : [[ Tg.DevDouble, Tg.SPECTRUM, Tg.READ_WRITE, 2**14] , {} ],
+#                'WaveX' : [[ Tg.DevDouble, Tg.SPECTRUM, Tg.READ_WRITE, 2**14] , {} ],
                 'WaveLength' : [[ Tg.DevShort, Tg.SCALAR, Tg.READ], {'unit' : 'points'} ],
                 'WaveStatus' : [[ Tg.DevString, Tg.SCALAR, Tg.READ ]],
-                'WaveName' : [[ Tg.DevString, Tg.SCALAR, Tg.READ_WRITE ]],
+                'WaveName' : [[ Tg.DevString, Tg.SCALAR, Tg.READ ]],
                 'WaveId' : [[ Tg.DevLong, Tg.SCALAR, Tg.READ ]],
                 'WaveDuration' : [[ Tg.DevDouble, Tg.SCALAR, Tg.READ ], {'unit': 'ms'} ],
                 'WaveOffset' : [[ Tg.DevDouble, Tg.SCALAR, Tg.READ_WRITE ], {'unit': 'A'} ],

@@ -2,16 +2,16 @@
 # -*- coding: utf-8 -*-
 
 # Python standard library imports
-import sys
-import socket
+from copy import copy
+from collections import deque
+from errno import ECONNREFUSED
+import logging
 from threading import Thread, RLock, Event, Semaphore
 from time import time, sleep
 import telnetlib
-import logging
-from copy import copy
 import traceback
-from collections import deque
-from errno import ECONNREFUSED
+import socket
+import sys
 
 # TANGO imports
 from PyTango import Except, DevFailed, DevState
@@ -50,6 +50,10 @@ CAB_READY = 'cabinet ready'
 
 # how often commands shall be attempted
 COMMAND_RETRY = 3
+
+def command_pause_retry(n):
+    '''sleep for nth command attempt'''
+    sleep(n*0.05)
 
 def instance():
     global _CAB
@@ -133,6 +137,8 @@ class CabinetControl(state.Module):
     port = None #< port of the cabinet controller / relay board (used for resetting interlocks)
     type_hint = 0
     use_waveforms = None #< using None to indicate UNKNOWN
+    stat = DevState.UNKNOWN, 'unknown'
+
     # which alarm bits shall be used
 
     #< indicates which 'port' of the PS should be used to reading cabinet-wide
@@ -148,7 +154,7 @@ class CabinetControl(state.Module):
         self.can_hang = {}
         self.active_port = None
         self.comm = FriendlySocket()
-        self.comm.read_timeout = 2.0
+        self.comm.read_timeout = 2.5
         # locks link to Ethernet bridge
         self.lck = RLock()
         self.rem_vdq = factory.VDQ(False)
@@ -157,7 +163,7 @@ class CabinetControl(state.Module):
         self.state_id = None
         self.update_t = None
         # only true when the cabinet is ON
-        self.updater = None
+        self.updater = UpdateThread()
 
         self.desc = 'generic'
         self.stat = (DevState.UNKNOWN, 'unknown')
@@ -165,7 +171,10 @@ class CabinetControl(state.Module):
 
         # counters
         self.init_counter = 0
+        self.command_counter = 0
+        # counting can bus level timeouts
         self.command_canbus_timeout = 0
+        # counting socket level timeouts
         self.command_timeout = 0
         self.__log = None
         self.telnet_connection = None
@@ -224,7 +233,7 @@ class CabinetControl(state.Module):
                 raise
         except Exception:
             traceback.print_exc()
-            raise
+            #raise
 
 
     def reconnect_core(self):
@@ -261,7 +270,6 @@ class CabinetControl(state.Module):
         # standard cabinet has not external interlocks
         pass
 
-
     def reset_interlocks(self):
         self.log.debug('reset_interlocks stub')
 
@@ -276,61 +284,21 @@ class CabinetControl(state.Module):
         elif self.can_hang.get(port, False) and not force:
             raise CanBusTimeout('CAN bus is hung, or busy')
 
-    def command_seq(self, port, *cmd_list, **kwargs):
-        """Executes a series of commands for a specific channel,
-           without allowing other commands to interfere.
-           This method is thread safe (unlike most others).
-        """
-        force = kwargs.get('force', False)
-        self.check_hung(port, force)
-        with self.lck:
-            self.switch_port(port)
-            r = []
-            try:
-                for cmd in cmd_list:
-                    r.append(self._command(cmd))
-            except CanBusTimeout:
-                self.can_hang[port] = True
-                raise
-            return r
+    def capture_can_bus_timeout(self, cmd):
+        msg = 'CAN bus timeout on port {0} {1}\n'.format(self.active_port, cmd)
+        self.traceback = ( msg + '\n'.join(traceback.format_stack()) )
+        self.log.warn(msg, exc_info=1)
+        self.command_canbus_timeout += 1
 
-    def command_q(self, STAT, port, *cmd_list, **kwargs):
-        self.command_queue.append( (STAT, port, cmd_list, kwargs) )
-
-    def checked_command(self, port, cmd, **kwargs):
-        timeout = None
-        with self.lck:
-            for x in xrange(COMMAND_RETRY):
-                nop(x)
-                try:
-                    self.switch_port(port)
-                    response = self._command(cmd, **kwargs)
-                    return check(port, response)
-                except CanBusTimeout, cb:
-                    timeout = cb
-                    self.log.warn('checked_command', exc_info=1)
-        self.can_hang[port] = True
-        # only useful for debugging
-        self.log.debug('CAN bus timeout in checked_command\n'+traceback.format_stack())
-        raise timeout
-
-    def command(self, port, cmd, **kwargs):
-        """Executes a command for a specific channel.
-           This method is thread safe (unlike most others).
-        """
-        force = kwargs.get('force', False)
-        self.check_hung(port, force)
-        with self.lck:
-            self.switch_port(port)
-            try:
-                r = self._command(cmd)
-                self.can_hang[port] = False
-            except CanBusTimeout:
-                self.can_hang[port] = True
-                raise
-            return r
+    def raise_can_bus_timeout(self, cmd):
+        self.can_hang[self.active_port] = True
+        msg = 'CAN bus timeout on port {0} {1}\n'.format(self.active_port, cmd)
+        raise CanBusTimeout(msg)
 
     def _command(self, cmd):
+        '''Executes a single command.
+           this command is not thread-safe!
+        '''
         if not self.comm.is_connected:
             traceback.print_exc()
             raise PS.PS_Exception('control %s not connected' % self.comm.hopo)
@@ -338,9 +306,12 @@ class CabinetControl(state.Module):
         COM = self.comm
         txt = cmd+"\r"
         response = None
+        self.command_counter += 1
 
         # retries CAN bus commands COMMAND_RETRY times
         for r in range(COMMAND_RETRY):
+            # communication pause before retry
+            command_pause_retry(r)
             COM.write(txt)
             response = COM.readline()
             # indicates TCP socket timeout
@@ -351,15 +322,13 @@ class CabinetControl(state.Module):
                     (self.comm.hopo, cmd)
                 raise PS.PS_Exception(msg)
 
-            if response[0]!='*':
+            if response[0]=='*':
+                self.capture_can_bus_timeout(cmd)
+            else:
                 break
 
         if response[0]=='*':
-            self.command_canbus_timeout += 1
-            tup =  (self.comm.host, self.active_port, cmd)
-            msg = "CAN bus timed out (%s.%s %s)" % tup
-            traceback.print_stack()
-            raise CanBusTimeout(msg)
+            self.raise_can_bus_timeout(cmd)
 
         payload = response.strip()
         if payload.startswith("E"):
@@ -370,6 +339,24 @@ class CabinetControl(state.Module):
             raise PS.PS_Exception(msg)
         return payload
 
+    def checked_command(self, port, cmd, **kwargs):
+        code = None
+        with self.lck:
+            self.switch_port(port)
+            for r in range(COMMAND_RETRY):
+                command_pause_retry(r)
+                response = self._command(cmd, **kwargs)
+                code = check(port, response)
+                if code & CAN_BUS_TIMEOUT_CODE:
+                    self.capture_can_bus_timeout(cmd)
+                else:
+                    return code
+
+        if code & CAN_BUS_TIMEOUT_CODE:
+            self.raise_can_bus_timeout(cmd)
+        else:
+            return code
+
     def switch_port(self, port):
         if port is None: return
         port = str(port)
@@ -379,6 +366,28 @@ class CabinetControl(state.Module):
             reply = self._command("PRT/")
             assert str(port)==reply, '%s==%s' % (sp,reply)
             self.active_port = port
+
+    # command execution
+    def command_seq(self, port, *cmd_list, **kwargs):
+        """Executes a series of commands for a specific channel,
+           without allowing other commands to interfere.
+        """
+        force = kwargs.get('force', False)
+        self.check_hung(port, force)
+        with self.lck:
+            self.switch_port(port)
+            r = []
+            for cmd in cmd_list:
+                r.append(self._command(cmd))
+            return r
+
+    def command_q(self, STAT, port, *cmd_list, **kwargs):
+        self.command_queue.append( (STAT, port, cmd_list, kwargs) )
+
+    def command(self, port, cmd, **kwargs):
+        """Executes a command for a specific channel.
+        """
+        return self.command_seq(port, cmd, **kwargs)[0]
 
     def __del__(self):
         self.disconnect_exc()
@@ -411,16 +420,22 @@ class CabinetControl(state.Module):
         self.log.error('can not turn off cabinet without relay board')
         raise PS.PS_Exception('cabinet without relay boards are always on.')
 
+    def update_fail(self, exc):
+        self.stat = DevState.ALARM, str(exc)
+
     def update(self):
-        # querying state info
-        start_t = time()
-        self.error_code = self.checked_command(0, 'STB/')
-        self.update_t = (start_t+time()) / 2.0
-        rem = bool(int(self.command(0, 'REM/')))
-        self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
-        self.update_stat2()
-
-
+        try:
+            # querying state info
+            start_t = time()
+            self.state_id = None
+            self.error_code = self.checked_command(0, 'STB/')
+            self.update_t = (start_t+time()) / 2.0
+            rem = bool(int(self.command(0, 'REM/')))
+            self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
+            self.update_stat2()
+        except Exception, exc:
+            self.update_fail(exc)
+            raise
 
     def process_command_queue(self):
         '''Executes all commands in command queue.
@@ -535,14 +550,18 @@ class Big_Cabinet(Wave_Cabinet):
         self.errors[12:12+len(interlocks)] = interlocks
 
     def update(self):
-        # querying state info
-        start_t = time()
-        self.error_code = self.checked_command(RELAY_PORT, 'STB/')
-        self.state_id = self.checked_command(RELAY_PORT, 'STC/')
-        self.update_t = (start_t + time() ) / 2.0
-        rem = bool(int(self.command(RELAY_PORT, 'REM/')))
-        self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
-        self.update_stat2()
+        try:
+            # querying state info
+            start_t = time()
+            self.error_code = self.checked_command(RELAY_PORT, 'STB/')
+            self.state_id = self.checked_command(RELAY_PORT, 'STC/')
+            self.update_t = (start_t + time() ) / 2.0
+            rem = bool(int(self.command(RELAY_PORT, 'REM/')))
+            self.rem_vdq = factory.VDQ(rem, q=PS.AQ_VALID)
+            self.update_stat2()
+        except Exception, exc:
+            self.update_fail(exc)
+            raise
 
     def power_on(self):
         self.command(RELAY_PORT, 'DCP=1')
@@ -622,9 +641,9 @@ class CanBusTimeout(PS.PS_Exception):
     '''
     code = 0x10000
 
-def check(port, response, hint=''):
-    '''Checks wether timeout occured and that channel in reply matches with
-       'my_ch'.
+def check(port, response):
+    '''Converts text response in integer and checks whether the specified
+       channel matches the response'.
     '''
     port = int(port)
     # extracts channel and communication status from reponse
@@ -635,12 +654,12 @@ def check(port, response, hint=''):
         exc.message += repr(response)
         raise exc
 
-    # checks wether communication timed out
-    if state_code & CAN_BUS_TIMEOUT_CODE:
-        msg = 'CAN bus timeout port %d' % port
-        if hint:
-            msg+=' (%s)' % hint
-        raise CanBusTimeout(msg)
+#    # checks wether communication timed out
+#    if state_code & CAN_BUS_TIMEOUT_CODE:
+#        msg = 'CAN bus timeout port %d' % port
+#        if hint:
+#            msg+=' (%s)' % hint
+#        raise CanBusTimeout(msg)
 
     # checks wether response came for right channel
     if port!=port_recv:

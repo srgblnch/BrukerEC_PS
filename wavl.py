@@ -60,20 +60,32 @@ READY = 'ready'
 
 _WAVL = None #< recent most created wave form loader
 
-
 def instance():
     global _WAVL
     if not _WAVL:
         _WAVL = WaveformLoader()
     return _WAVL
 
-def dump_to_file(dirname, wup, wdown):
-    os.makedirs(dirname)
-    pid = str(os.getpid)
-    fname_up = os.path.join(dirname, pid, 'up.txt')
-    fname_down = os.path.join(dirname, pid, 'down.txt')
-    open(fname_up, 'w').write('\n'.join(map(repr,wup)))
-    open(fname_down, 'w').write('\n'.join(map(repr,wdown)))
+def dump_to_file(self, wup, wdown, attempt):
+        '''never raises an Exception
+        '''
+        try:
+            dirname = os.path.join(self.dumpdir, str(os.getpid()))
+            try:
+                os.makedirs(dirname)
+            except OSError, err:
+                self.log.debug('making new dump dir failed: ' + str(err))
+            fname_up = os.path.join(dirname, str(attempt)+'-up.txt')
+            fname_down = os.path.join(dirname, str(attempt)+'-down.txt')
+            open(fname_up, 'w').write('\n'.join(map(repr,wup)))
+            open(fname_down, 'w').write('\n'.join(map(repr,wdown)))
+            self.log.info('dumped waveforms into {0}'.format(dirname))
+        except Exception, exc:
+            self.log.warn(
+                'verification failed AND ' +
+                'exception while dumping waveforms into {0}'.format(dirname),
+                exc_info=1)
+            return exc
 
 class Load(object):
     def __init__(self, port):
@@ -86,17 +98,20 @@ class Download(Load):
 
     BASE_MSG = 'download'
 
-    def __init__(self, port, wave, data, verify=True):
+    def __init__(self, port, wave, data):
         Load.__init__(self, port)
         self.wave = wave
         self.data = data
-        self.verify = verify
 
     def __str__(self):
       return 'Download(port %d, %d pt)' % (self.port, len(self.data))
 
     def run(self, impl, wavl):
         impl.ramp_off()
+        if impl.is_ramping():#it would have to have change to 'off' with ramp_off() call
+            raise PS.PS_Exception('Trying to download a waveform when ramping')
+        if impl.is_power_on():
+            raise PS.PS_Exception('Trying to download a waveform when power on')
         rval = wavl.download(self.port, self.data)
         impl.push_wave_down(self.wave)
         return rval
@@ -117,8 +132,6 @@ class Upload(Load):
       impl.push_wave_up(self, rval)
       return rval
 
-
-
 class WaveformException(PS.PS_Exception):
 
     def __init__(self, response):
@@ -127,6 +140,8 @@ class WaveformException(PS.PS_Exception):
         text = response[5:]
         PS.PS_Exception.__init__(self, text)
 
+class LoadException(PS.PS_Exception):
+    pass
 
 def bebusy(msg):
 
@@ -138,7 +153,6 @@ def bebusy(msg):
                 return f(self, *args,**kwargs)
             finally:
                 self.busy = None
-            print 'wrapper maker',f
         return wrap_busy
 
     return wrapper_maker
@@ -149,6 +163,9 @@ class WaveformLoader(object):
 
     active_load = None
     busy = None
+
+    # how many times verification shall be attempted before generating an error
+    verify = 3
 
     def __init__(self):
         global _WAVL
@@ -242,36 +259,48 @@ class WaveformLoader(object):
             raise PS.PS_Exception(msg)
 
     @bebusy('downloading ramp')
-    def download(self, ch, wave, verify=1):
+    def download(self, ch, wave):
         '''Transmits waveform to control unit.
         '''
-        sok = self.sok
-        if not sok.is_connected:
+        if not self.sok.is_connected:
             raise PS.PS_Exception('not connected')
 
         wave = tuple(int(w) for w in wave)
         tmout = self.sok.timeout
         self.log.debug('starting download %s, timeout %s s', ch, tmout)
-        sok.timeout = sok.read_timeout
+        self.sok.timeout = self.sok.read_timeout
         start_dl_cmd = 'd'+str(ch)+TERM
-        sok.write(start_dl_cmd)
+        self.sok.write(start_dl_cmd)
         buf = ''.join(str(w)+TERM for w in wave) + ';' + TERM
         self.log.debug('buf contains %d characters' % len(buf))
         start_t = time()
-        sok.timeout = AVG_TIME_PER_SAMPLE * len(wave) + TIME_BASE
-        sok.write(buf)
-        ret = sok.readline().strip()
+        self.sok.timeout = AVG_TIME_PER_SAMPLE * len(wave) + TIME_BASE
+        self.sok.write(buf)
+        ret = self.sok.readline().strip()
         if not ret.startswith('ok'):
             raise WaveformException(ret)
         duration = time()-start_t
-        if verify and wave:
-            self.log.debug('verifiying...')
-            w = self.upload(ch,len(wave))
-            if tuple(w)!=tuple(wave):
-                dump_to_file(self.dumpdir, w,wave)
-                msg = 'wave form not correctly loaded: verification failed!'
-                raise PS.PS_Exception(msg)
-            self.log.info('download %d succeeded' % ch)
+        self.log.info('download {0} finished after {1} s'.format(ch, duration))
+        if self.verify:
+            self.log.debug('verifying...')
+            success = False
+        else:
+            success = True
+
+        for r in range(1,1+self.verify):
+            upstart_t = time()
+            wup = self.upload(ch,len(wave))
+            up_duration = time()-upstart_t
+            if tuple(wup)==tuple(wave):
+                self.log.info('verification succeeded at {0}. attempt'.format(r))
+                success = True
+                break
+            else:
+                self.log.warn('verification failed, attempt {0}'.format(r))
+                dump_to_file(self, wup, wave, r)
+
+        if not success:
+            raise LoadException('verification failed')
         self._duration = duration
         return ret
 

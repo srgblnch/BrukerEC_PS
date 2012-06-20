@@ -1,4 +1,28 @@
-1.12
+1.12.2
+* improve robustness of download verification feature to avoid trouble while
+  import BO correctors
+* tuning.py: eliminates trace at startup caused by DevFailed (RegulationTuneable attribute not found)
+* cabinet.py restart(): call start() with keyword argument re
+* BrukerBend: only tries to set_write_value() for WRITE-able attributes
+* BrukerBend: made WaveName READ only (both because TANGO C++ bug 3068607
+      and writing is not sensible anyway unless both bendings use the same ramp)
+* adds forgotten 0x0E and 0x0F states to dipole / quadrupole power supplies
+* setpoint readback outside regular limits (after restart)_ will not affect reading of CurrentSetpoint
+
+1.12.1
+* make difference in WaveName be okay (green, VALID) instead of alarm (orange)
+* cabinet.py:checked_command() fix for wrong status code being returned
+* cabinet.py:checked_command() fix for harmless can bus timeout blocking
+  communication
+* slightly changing cabinet status message for cabinets without relay board
+* increased socket timeout for reads to 2.5, after seeing socket.timeouts
+  where the power supply is working fine
+* remove Waveform from unified interface
+* socket.error will now cause a (transitory) communication error message to be
+  shown (short termn communication errors that appear and disapper quickly
+  should NOT be observed during normal operation)
+
+1.12.0
 * not pushing WaveName anymore working around a bug in Tango fixed in 7.2
 * added ErrorCode2,3,4 for bend / quadrupole power supplies
 * ErrorCode includes now the state as well

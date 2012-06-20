@@ -35,7 +35,17 @@ class Tuner(object):
                 self.impl.set_change_event('RegulationTuneable', True)
                 break
             except ValueError:
-                traceback.print_exc()
+                self.impl.warn('add_RegulationTuneable', exc_info=1)
+                sleep(0.1)
+            except Tg.DevFailed, df:
+                if df[-1].reason=='API_AttrNotFound':
+                    self.impl.warn('add_RegulationTuneable', exc_info=1)
+                    sleep(0.1)
+                else:
+                    raise
+
+
+
         aprop = Tg.UserDefaultAttrProp()
         aprop.set_description('whether modifying parameters related to regulation loop should be allowed or not. only set this to true when you really, really know what you are doing AND have a backup.')
         attr.set_default_properties(aprop)

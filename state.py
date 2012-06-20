@@ -45,6 +45,8 @@ TYPE_3.update({
     0x0a: (DevState.ON, 'RUNNING: pulse and regulation on (DC ON)'),
     0x0c: (DevState.ALARM, 'FAULT_PN: pulse and regulation on, error pending'),
     0x0d: (DevState.ALARM, 'FAULT_PF: pulse and regulation off, error pending'),
+    0x0e: (DevState.INIT, 'STOPPING_1' ),
+    0x0f: (DevState.INIT, 'STOPPING_2' ),
 })
 
 TYPE_4 = deepcopy(TYPE_1)
@@ -94,12 +96,12 @@ class Module(object):
         '''
         self.alarms = bit_filter_msg(self.error_code, self.errors)
         if not self.errors:
-            self.stat = DevState.INIT, 'cabinet type not detected (yet)'
+            self.stat = DevState.INIT, 'module type not detected (yet)'
         elif self.alarms:
             status = '\n'.join(self.alarms)
             self.stat = DevState.ALARM, status
         elif self.state_id is None:
-            self.stat = [ DevState.INIT, 'machine state not available (?)' ]
+            self.stat = [ DevState.UNKNOWN, 'okay' ]
         elif self.state_id > len(self.machine_stat):
             self.stat = [ DevState.FAULT, 'unknown state [%02d]' % self.state_id ]
         else:
@@ -220,7 +222,7 @@ E_IGBT = 'IGBT fault'
 ERRORS_CORR = [
     ## Error byte, LSB, 0x00 ... 0x08
     E_EARTH,
-    'DC filter overvoltage (OR {0})'.format(E_EEPROM),
+    'DC filter overvoltage (or {0})'.format(E_EEPROM),
     E_LOAD,
     E_ADC,
     'DC on fault',

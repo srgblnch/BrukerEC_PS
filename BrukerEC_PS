@@ -9,6 +9,7 @@ shift
 
 # prepares enviroment
 SERVERPATH="$SICILIA/ds/python/BrukerEC_PS"
+#SERVERPATH="$SICILIA/tmp/BrukerEC_PS"
 PYTHONPATH+=":$SERVERPATH"
 CMD="/usr/bin/python BrukerEC_PS.py $INST $*"
 SCREEN="screen -dmS $SERVER.$INST"
@@ -16,9 +17,9 @@ SCREEN="screen -dmS $SERVER.$INST"
 echo $SERVERPATH
 echo $CMD
 cd $SERVERPATH || exit 1
-if [ "$INST" = "-?" ]
-then
+#if [ "$INST" = "-?" ]
+#then
     $CMD
-else
-    $SCREEN $CMD
-fi
+#else
+#    $SCREEN $CMD
+#fi
