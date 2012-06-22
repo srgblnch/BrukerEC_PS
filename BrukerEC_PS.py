@@ -177,6 +177,7 @@ class BrukerEC_PS(PS.PowerSupply):
     #stepWaitTime = 30#s FIXME: this value should be a property, 
     #                           but now can be mod using Exec()
     _cycleThread = None
+    _backup_setpoint = None #FIXME: hackish to force to remember the current setpoint after a power off
 
     PUSHED_ATTR = (
         'Current', 'CurrentSetpoint', 'Voltage',
@@ -708,6 +709,7 @@ class BrukerEC_PS(PS.PowerSupply):
                 self._write('TriggerMask',0)
         except Exception:
                 self.log.error('while switching wave cabinet off', exc_info=1)
+        self._backup_setpoint = self.cache['CurrentSetpoint'].value
         qstat = self.STAT if self.wavl.busy else None
         self.cab.switch_power(self.Port, self.DCP_Bit, qstat=qstat)
 
@@ -721,8 +723,9 @@ class BrukerEC_PS(PS.PowerSupply):
         self.cache['TriggerMask'] = VDQ(0,q=AQ_VALID)
         #check if the PS have lost the setpoint during the Off time
         try:
-            if self._read('CurrentSetpoint').value != self.cache['CurrentSetpoint']:
-                self._write('CurrentSetpoint',self.cache['CurrentSetpoint'])
+            if not self._backup_setpoint == None and \
+               self._read('CurrentSetpoint').value != self._backup_setpoint:
+                self._write('CurrentSetpoint',self._backup_setpoint)
         except Exception,e:
             self.log.error('while trying to remember previous setpoint when switch on', exc_info=1)
 

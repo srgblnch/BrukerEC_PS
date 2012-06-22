@@ -107,13 +107,13 @@ class Download(Load):
       return 'Download(port %d, %d pt)' % (self.port, len(self.data))
 
     def run(self, impl, wavl):
+        was_power_on = impl.is_power_on()
         impl.ramp_off()
         if impl.is_ramping():#it would have to have change to 'off' with ramp_off() call
             raise PS.PS_Exception('Trying to download a waveform when ramping')
-        if impl.is_power_on():
-            raise PS.PS_Exception('Trying to download a waveform when power on')
         rval = wavl.download(self.port, self.data)
         impl.push_wave_down(self.wave)
+        if was_power_on: impl.On()
         return rval
 
 class Upload(Load):
