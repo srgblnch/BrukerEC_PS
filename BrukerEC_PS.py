@@ -374,8 +374,14 @@ class BrukerEC_PS(PS.PowerSupply):
             def read_ErrorCodeX(inst, attr):
                 self.ERR_CODE[idx].set_attr(attr)
 
-            attr = Tg.Attr('ErrorCode'+str(idx+1), Tg.DevLong, Tg.READ)
-            self.add_attribute(attr, r_meth=partial(read_ErrorCodeX, 1))
+            attrName = 'ErrorCode'+str(idx+1)
+            attr = Tg.Attr(attrName, Tg.DevLong, Tg.READ)
+            try:
+                self.add_attribute(attr, r_meth=partial(read_ErrorCodeX, 1))
+            except Exception,e:
+                self.debug_stream("Dynamic attr %s fail to build using partial"
+                                  %(attrName))
+                self.add_attribute(attr, r_meth=read_ErrorCodeX)
 
         # after this line the pstype is considered fully detected
         self._pstype = pst
