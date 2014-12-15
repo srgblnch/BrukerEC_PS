@@ -274,7 +274,7 @@ ERRORS_BEND = [
     E_CAPV,
     'IGBT 2Q1 (2) fault',
     'IGBT 2Q2 (1) fault',
-    'IGBT 2Q1 (2) fault',
+    'IGBT 2Q1 (1) fault',
     'unbalance 2Q2 (2)',
     'self 2 overtemperature',
     'unbalance 2Q1 (1)',
