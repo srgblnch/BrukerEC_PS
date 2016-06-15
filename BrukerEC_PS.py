@@ -457,7 +457,9 @@ class BrukerEC_PS(PS.PowerSupply):
                 msg = 'control unit %r: %s (%d)' % (self.cab.host, exc.args[1], e)
             raise PS.PS_Exception(msg)
         except cabinet.CanBusTimeout,exc:
-            self.STAT.FAULT('Socket exception: %s'%(exc.args))
+            # self.STAT.FAULT('Socket exception: %s'%(exc.args))
+            # Not necessary to decay to fault, only alert that it have happen.
+            self._alarm(str(msg))
         except Exception,e:
             msg = 'control unit %r: Exception! Review comunications' % (self.cab.host)
             raise PS.PS_Exception(msg)
@@ -686,7 +688,8 @@ class BrukerEC_PS(PS.PowerSupply):
             self.socket_error_counter += 1
 
         except cabinet.CanBusTimeout, m:
-            STAT.COMM_FAULT(m)
+            # STAT.COMM_FAULT(m)  # Not necessary to decay to fault,
+            self._alarm(str(msg))  # only alert that it have happen.
 
         except PS.PS_Exception, exc:
             self._alarm(str(exc))
@@ -1632,7 +1635,9 @@ class BrukerEC_Cabinet(PS.PowerSupply):
             self.STAT.COMM_ERROR(msg)
 
         except cabinet.CanBusTimeout:
-            self.STAT.COMM_FAULT('CAN bus hanging')
+            # self.STAT.COMM_FAULT('CAN bus hanging')
+            # Not necessary to decay to fault, only alert that it have happen.
+            self._alarm(str(msg))
 
         if cab.use_waveforms and cab.is_connected:
             try:
